@@ -64,9 +64,11 @@ public partial class MainWindow
         }
         catch
         {
-            MessageBox.Show("SPT.Launcher.exe not found. Please make sure to run from `SPT` root folder.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            Close();
-            return;
+            if (!ConfirmContinueWithoutSptRoot())
+            {
+                Close();
+                return;
+            }
         }
 
         InitializeComponent();
@@ -100,9 +102,11 @@ public partial class MainWindow
         {
             if (!File.Exists(_clientPath))
             {
-                MessageBox.Show("SPT.Launcher.exe not found. Please make sure to run from `SPT` root folder.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                Close();
-                return;
+                if (!ConfirmContinueWithoutSptRoot())
+                {
+                    Close();
+                    return;
+                }
             }
 
             await RefreshPluginConfigs();
@@ -129,6 +133,19 @@ public partial class MainWindow
             // Start server notifier
             await InitializeSignalR();
         };
+    }
+
+    private static bool ConfirmContinueWithoutSptRoot()
+    {
+        var result = MessageBox.Show(
+            "SPT not found. Make sure you run this inside the SPT root folder.\n\n" +
+            "You can continue if you know what you are doing. Are you sure you want to continue?",
+            "SPT Not Found",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+
+        return result == MessageBoxResult.Yes;
     }
 
     private async Task InitializeSignalR()
