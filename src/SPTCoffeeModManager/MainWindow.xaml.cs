@@ -110,6 +110,9 @@ public partial class MainWindow
                 }
             }
 
+            // Kick off SPT version check immediately so local errors/version show without waiting on server calls.
+            _ = CheckSptVersion();
+
             await RefreshPluginConfigs();
             await RefreshMods();
 
@@ -128,10 +131,7 @@ public partial class MainWindow
             // Check server status on load
             await CheckServerStatus();
 
-            // Check SPT version compatibility
-            await CheckSptVersion();
-
-            // Start server notifier
+            // Start server notifier (may set status to Offline if unreachable)
             await InitializeSignalR();
         };
     }
@@ -191,7 +191,13 @@ public partial class MainWindow
     private void OnHeadlessOnline(string message) => Dispatcher.Invoke(() => { Console.WriteLine("[HEADLESS NOTICE] " + message); HomeTabContent.SetHeadlessStatus("Online", System.Windows.Media.Brushes.LightGreen); });
     private void OnHeadlessRestarted(string message) => Dispatcher.Invoke(() => { Console.WriteLine("[SERVER NOTICE] " + message); HomeTabContent.SetHeadlessStatus("Restarting...", System.Windows.Media.Brushes.Orange); });
     private void OnConnected(string msg) => Dispatcher.Invoke(() => Console.WriteLine(msg));
-    private void OnConnectionFailed(Exception ex) => Dispatcher.Invoke(() => MessageBox.Show($"SignalR connection failed:\n{ex.Message}"));
+    private void OnConnectionFailed(Exception ex) => Dispatcher.Invoke(() =>
+    {
+        Debug.WriteLine($"SignalR connection failed: {ex.Message}");
+        HomeTabContent.SetServerStatus("Offline", System.Windows.Media.Brushes.Red);
+        HomeTabContent.SetSptServerStatus("Offline", System.Windows.Media.Brushes.Red);
+        HomeTabContent.SetHeadlessStatus("Offline", System.Windows.Media.Brushes.Red);
+    });
 
     private string BaseUrl => $"http://{_serverIp}:{_serverPort}";
 
@@ -278,71 +284,113 @@ public partial class MainWindow
     {
         try
         {
-            // Load current spt version
-            if (_modsFolder != null)
+            if (_modsFolder == null)
+            {
+                HomeTabContent.SetCurrentSptVersion("SPT folder not found", System.Windows.Media.Brushes.Red);
+                return;
+            }
+
+            // --- Local check first (fast, no network needed) ---
+            var sptFolder = Path.Combine(_modsFolder, "spt");
+            if (!Directory.Exists(sptFolder))
+            {
+                HomeTabContent.SetCurrentSptVersion("SPT folder missing", System.Windows.Media.Brushes.Red);
+                Debug.WriteLine("SPT folder not found at: " + sptFolder);
+                return;
+            }
+
+            var sptCoreDll = Path.Combine(sptFolder, "spt-core.dll");
+            if (!File.Exists(sptCoreDll))
+            {
+                HomeTabContent.SetCurrentSptVersion("spt-core.dll missing", System.Windows.Media.Brushes.Red);
+                Debug.WriteLine("spt-core.dll not found at: " + sptCoreDll);
+                return;
+            }
+
+            FileVersionInfo versionInfo;
+            try
+            {
+                versionInfo = FileVersionInfo.GetVersionInfo(sptCoreDll);
+            }
+            catch (Exception ex)
+            {
+                HomeTabContent.SetCurrentSptVersion("Could not read version", System.Windows.Media.Brushes.Red);
+                Debug.WriteLine($"Failed to read version info from {sptCoreDll}: {ex.Message}");
+                return;
+            }
+
+            var localVersionText = versionInfo.FileVersion ?? "0.0.0.0";
+            if (string.IsNullOrEmpty(localVersionText) || localVersionText == "0.0.0.0")
+            {
+                HomeTabContent.SetCurrentSptVersion("Version info empty", System.Windows.Media.Brushes.Red);
+                Debug.WriteLine("Version info is empty for: " + sptCoreDll);
+                return;
+            }
+
+            // Local version found — show local version immediately in gray until server confirms state
+            HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
+
+            // --- Server comparison (only attempted if server is already reachable) ---
+            try
             {
                 var response = await SharedHttpClient.GetAsync($"{BaseUrl}/spt/version");
-                var bNotSuccessful = true;
-
-                var sptCoreDll = Path.Combine(_modsFolder, "spt","spt-core.dll");
-                if (File.Exists(sptCoreDll))
+                if (!response.IsSuccessStatusCode)
                 {
-                    var versionInfo = FileVersionInfo.GetVersionInfo(sptCoreDll);
-                    HomeTabContent.SetCurrentSptVersion($"{versionInfo.FileVersion}", System.Windows.Media.Brushes.Aqua);
-                    bNotSuccessful = false;
+                    Debug.WriteLine($"Server version check returned non-success status: {response.StatusCode}");
+                    // Server failed, show local version in gray
+                    HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
+                    return;
                 }
 
-                if (response.IsSuccessStatusCode)
+                string verText;
+                try
                 {
-                    string verText;
-                    try
-                    {
-                        var responseText = await response.Content.ReadAsStringAsync();
-                        // Server returns a JSON string like "1.2.3.4"
-                        verText = JsonSerializer.Deserialize<string>(responseText) ?? responseText.Trim().Trim('"');
-                    }
-                    catch
-                    {
-                        verText = "0.0.0.0";
-                    }
-
-                    if (!Version.TryParse(verText, out var version))
-                    {
-                        version = new Version(0, 0, 0, 0);
-                    }
-
-                    // Check if the server is newer than local
-                    var localSptVersion = new Version(HomeTabContent.CurrentSptVersionTextBlock.Text);
-                    if (version > localSptVersion)
-                    {
-                        HomeTabContent.SetCurrentSptVersion($"{localSptVersion} (Outdated)", System.Windows.Media.Brushes.Red);
-
-                        // Set play button to update
-                        HomeTabContent.SetLaunchOrUpdateButtonContent("Update SPT");
-                        var updateSpt = MessageBox.Show("A new SPT version is required. Would you like to update?", "Update Required", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                        if (updateSpt == MessageBoxResult.Yes)
-                        {
-                            SptNeedsUpdate();
-                        }
-                    }
-                    else
-                    {
-                        // use the current text already set on the HomeTab
-                        HomeTabContent.SetCurrentSptVersion(HomeTabContent.CurrentSptVersionTextBlock.Text, System.Windows.Media.Brushes.LightGreen);
-                    }
-
-                    bNotSuccessful = false;
+                    var responseText = await response.Content.ReadAsStringAsync();
+                    verText = JsonSerializer.Deserialize<string>(responseText) ?? responseText.Trim().Trim('"');
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to parse server version response: {ex.Message}");
+                    // Server response failed, show local version in gray
+                    HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
+                    return;
                 }
 
-                if(bNotSuccessful)
+                if (!Version.TryParse(verText, out var serverVersion) ||
+                    !Version.TryParse(localVersionText, out var localVersion))
                 {
-                    HomeTabContent.SetCurrentSptVersion("Unknown", System.Windows.Media.Brushes.Red);
+                    Debug.WriteLine($"Failed to parse versions: server='{verText}', local='{localVersionText}'");
+                    // Version parse failed, show local version in gray
+                    HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
+                    return;
                 }
+
+                if (serverVersion > localVersion)
+                {
+                    HomeTabContent.SetCurrentSptVersion($"{localVersionText} (Outdated)", System.Windows.Media.Brushes.Red);
+                    HomeTabContent.SetLaunchOrUpdateButtonContent("Update SPT");
+
+                    var updateSpt = MessageBox.Show("A new SPT version is required. Would you like to update?",
+                        "Update Required", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                    if (updateSpt == MessageBoxResult.Yes)
+                        SptNeedsUpdate();
+                }
+                else
+                {
+                    HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.LightGreen);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Server unreachable — show local version in gray
+                Debug.WriteLine($"Could not reach server for SPT version check: {ex.Message}");
+                HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
             }
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
+            HomeTabContent.SetCurrentSptVersion("Check failed", System.Windows.Media.Brushes.Red);
+            Debug.WriteLine($"Unexpected error in CheckSptVersion: {e.Message}");
         }
     }
 
