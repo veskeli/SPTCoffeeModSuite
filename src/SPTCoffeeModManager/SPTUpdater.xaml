@@ -1,0 +1,79 @@
+﻿<Window x:Class="SPTCoffeeModManager.SPTUpdater"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:local="clr-namespace:SPTCoffeeModManager"
+        mc:Ignorable="d"
+        Background="#1e1e1e" Foreground="White"
+        Title="SPT Updater" Height="250" Width="600"
+        ResizeMode="NoResize" WindowStyle="None" WindowStartupLocation="CenterScreen">
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <local:WindowHeader Grid.Row="0" HeaderText="SPT Updater"/>
+
+        <StackPanel Grid.Row="1" Margin="5" VerticalAlignment="Center" HorizontalAlignment="Center" >
+
+            <TextBlock x:Name="ProgressText"
+                       Text="Downloading Update..."
+                       FontSize="18"
+                       FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       Margin="0,0,0,20"/>
+            <!-- Download Progress -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,0">
+                <ProgressBar x:Name="DownloadProgressBar"
+                             Width="500"
+                             Height="25"
+                             Minimum="0"
+                             Maximum="100"
+                             Value="0"/>
+                <TextBlock x:Name="PercentageText"
+                           Text="0%"
+                           FontSize="16"
+                           HorizontalAlignment="Center"
+                           Margin="10,0,0,0"/>
+            </StackPanel>
+            <!-- Status Messages -->
+            <StackPanel>
+                <!-- Backup Status -->
+                <TextBlock x:Name="BackupStatusText"
+                           Text="Creating backup of existing files..."
+                           FontSize="14"
+                           HorizontalAlignment="Center"
+                           Margin="0,10,0,0"
+                           Visibility="Hidden"/>
+                <!-- Extraction Status -->
+                <TextBlock x:Name="ExtractionStatusText"
+                           Text="Extracting update files..."
+                           FontSize="14"
+                           HorizontalAlignment="Center"
+                           Margin="0,10,0,0"
+                           Visibility="Hidden"/>
+                <!-- Finalization Status -->
+                <TextBlock x:Name="FinalizationStatusText"
+                           Text="Finalizing update..."
+                           FontSize="14"
+                           HorizontalAlignment="Center"
+                           Margin="0,10,0,0"
+                           Visibility="Hidden"/>
+            </StackPanel>
+
+            <!-- Close Button -->
+            <Button x:Name="CloseButton"
+                    Click="CloseButton_Click"
+                    Content="Close"
+                    Width="100"
+                    Height="30"
+                    HorizontalAlignment="Center"
+                    Margin="0,20,0,0"/>
+
+        </StackPanel>
+    </Grid>
+</Window>

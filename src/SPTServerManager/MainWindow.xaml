@@ -1,0 +1,129 @@
+﻿<Window x:Class="SPTServerManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sptServerManager="clr-namespace:SPTServerManager"
+        Title="SPT Server Manager" Height="530" Width="800"
+        ResizeMode="NoResize"
+        Background="#1e1e1e" Foreground="White"
+        WindowStyle="None">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <sptServerManager:WindowHeader Grid.Row="0" HeaderText="SPT Server Manager" />
+
+        <Grid Grid.Row="1" Margin="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Server status texts -->
+            <StackPanel Orientation="Horizontal" Grid.Row="0">
+                <!-- Launcher Server Status -->
+                <Label Content="Launcher Server:" FontWeight="Bold" FontSize="16" Foreground="White" VerticalAlignment="Center"/>
+                <TextBlock x:Name="ServerStatusText" Text="Checking..." FontSize="16" Foreground="Gray" VerticalAlignment="Center"/>
+                <!-- SPT Server Status -->
+                <Label Content="SPT Server:" FontWeight="Bold" FontSize="16" Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="SptServerStatusText" Text="Checking..." FontSize="16" Foreground="Gray" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <!-- SPT Headless Manager Status -->
+                <Label Content="Headless Manager:" FontWeight="Bold" FontSize="16" Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="SptHeadlessManagerStatusText" Text="Checking..." FontSize="16" Foreground="Gray" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <!-- SPT Headless Status -->
+                <Label Content="SPT Headless:" FontWeight="Bold" FontSize="16" Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                <TextBlock x:Name="SptHeadlessStatusText" Text="Checking..." FontSize="16" Foreground="Gray" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+            </StackPanel>
+
+            <!-- TabControl in central area -->
+            <TabControl Grid.Row="1" Background="#2d2d30" Foreground="White">
+
+                <TabItem Header="Mods">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
+                            <Button Content="Open Zip Mod Folder" Width="180" Margin="0,0,0,0"
+                                    Click="OpenZipModFolder_Click"/>
+                            <Button Content="Update Mods" Width="150" Margin="5,0,0,0"
+                                    Click="UpdateMods_Click" Background="DarkOliveGreen"
+                                    Name="UpdateModsButton"/>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Configs">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
+                            <Button Content="Update Configs" Width="150" Margin="0,0,0,8"
+                                    Click="UpdateConfigs_Click" Background="DarkOliveGreen"
+                                    Name="UpdateConfigsButton"/>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <!-- Admin Tab -->
+                <TabItem Header="Admin">
+                    <Grid Margin="5">
+                        <StackPanel>
+                            <ListView Name="AdminListView" Height="250" Background="#1e1e1e" Foreground="White" BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                                <ListView.Resources>
+                                    <Style TargetType="GridViewColumnHeader">
+                                        <Setter Property="Background" Value="#232323"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                        <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                    </Style>
+                                </ListView.Resources>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Note" Width="300" DisplayMemberBinding="{Binding Note}" />
+                                        <GridViewColumn Header="Is Enabled" Width="100" DisplayMemberBinding="{Binding IsEnabled}" />
+                                        <GridViewColumn Header="Allow Headless Close" Width="150" DisplayMemberBinding="{Binding AllowHeadlessClose}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                <Button Content="Refresh Admin List" Width="150" Margin="0,0,0,8"
+                                        Click="RefreshAdminList_Click" Background="DarkOliveGreen"/>
+                                <Button Content="Add Admin" Width="100" Margin="0,0,0,8"
+                                        Click="AddAdmin_Click" Background="DodgerBlue"/>
+                                <Button Content="Edit Selected Admin" Width="140" Margin="0,0,0,8"
+                                        Click="EditAdmin_Click" Background="DodgerBlue"/>
+                                <Button Content="Remove Selected Admin" Width="160" Margin="0,0,0,8"
+                                        Click="RemoveAdmin_Click" Background="DarkRed"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+            </TabControl>
+
+            <!-- Control buttons -->
+            <StackPanel Orientation="Horizontal" Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0">
+                <Button Content="Start All Servers" Name="StartAllServersButton" Width="150" Margin="5" Click="StartAllServers_Click" Height="27" Background="Green"/>
+                <Button Content="Stop All Servers" Name="StopAllServersButton" Width="150" Margin="5" Click="StopAllServers_Click" Height="27" Background="DarkRed"/>
+                <Button Content="Settings" Width="100" Margin="5" Click="OpenSettings_Click" Background="DodgerBlue"/>
+            </StackPanel>
+
+            <!-- Control buttons -->
+            <StackPanel Orientation="Horizontal" Grid.Row="3" HorizontalAlignment="Right" Margin="0,10,0,0">
+                <Button Content="Start Launcher Server" Name="StartLauncherServerButton" Width="150" Margin="5" Click="StartServer_Click" Height="27" Background="Green"/>
+                <Button Content="Start SPT Server" Name="StartSptServerButton" Width="150" Margin="5" Click="StartSptServer_Click" Height="27" Background="Green"/>
+                <Button Content="Start SPT Headless Manager" Name="StartSptHeadlessManagerButton" Width="180" Margin="5" Click="StartSptHeadlessManager_Click" Height="27" Background="DarkGreen"/>
+                <Button Content="Close Headless" Name="CloseSptHeadlessButton" Width="150" Margin="5" Click="CloseSptHeadless_Click" Height="27" Background="DarkRed"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

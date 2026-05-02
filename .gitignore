@@ -1,0 +1,56 @@
+# Build output
+bin/
+obj/
+publish/
+
+# NuGet packages
+/packages/
+*.nupkg
+*.snupkg
+
+# Visual Studio / JetBrains Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+riderModule.iml
+/_ReSharper.Caches/
+*.DotSettings.user
+
+# VS Code
+.vscode/
+
+# Build logs
+*.log
+msbuild.log
+msbuild.err
+msbuild.wrn
+
+# Compiled binaries
+*.dll
+*.exe
+*.pdb
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Temp / backup files
+*~
+*.tmp
+*.bak
+*.swp
+
+# MSBuild/NuGet generated cache files
+*.nuget.dgspec.json
+*.nuget.g.props
+*.nuget.g.targets
+project.assets.json
+project.nuget.cache
+project.packagespec.json
+rider.project.model.nuget.info
+rider.project.restore.info

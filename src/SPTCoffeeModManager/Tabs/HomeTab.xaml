@@ -1,0 +1,182 @@
+﻿<UserControl x:Class="SPTCoffeeModManager.Tabs.HomeTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignWidth="860"
+             d:DesignHeight="480"
+             Background="#121212">
+    <Grid Margin="5">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="0" />  <!-- Row 0: Empty space for buttons -->
+            <RowDefinition Height="Auto" />  <!-- Row 1: headers (Mod Status / Admin panel) -->
+            <RowDefinition Height="*" />     <!-- Row 2: main two-column content -->
+            <RowDefinition Height="Auto" />  <!-- Row 3: middle placeholder -->
+            <RowDefinition Height="Auto" />  <!-- Row 4: bottom quick status + play button -->
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="2,1,2,1" Height="30">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+        </Grid>
+
+        <!-- Header: Mod Status and Admin panel label aligned on same row -->
+        <Grid Grid.Row="1" Margin="0,6,0,2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="620" /> <!-- Match the width of the mod list below for alignment -->
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Mod Status and Check for updates button grouped together on the left -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="Mod Status" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,8,6" VerticalAlignment="Center" />
+                <Button Name="CheckUpdatesButton" Content="Check for mod updates" Width="150" Height="24" Margin="0,0,0,6"
+                        Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+            </StackPanel>
+
+            <TextBlock Grid.Column="1" Text="Admin panel" Name="AdminPanelText" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="12,0,0,6" VerticalAlignment="Center" />
+        </Grid>
+
+        <!-- Two-column area: left = mod list, right = admin panel -->
+        <Grid Grid.Row="2" Margin="0,6,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="620" /> <!-- Set a fixed width for the mod list to ensure consistent alignment and spacing; this also allows the admin panel to size to its content -->
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="{DynamicResource BrushSurface1}" HorizontalAlignment="Left" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
+                <ListView Name="ModListView" Background="{DynamicResource BrushAppBackground}" HorizontalAlignment="Left" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}">
+                    <ListView.Resources>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Background" Value="{DynamicResource BrushAppBackground}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Status}" Value="Up to date">
+                                    <Setter Property="Background" Value="{DynamicResource BrushAccentAlt}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Update">
+                                    <Setter Property="Background" Value="{DynamicResource BrushWarning}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Not installed">
+                                    <Setter Property="Background" Value="{DynamicResource BrushDanger}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Removed">
+                                    <Setter Property="Background" Value="{DynamicResource BrushDangerAlt}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Downloading...">
+                                    <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Extracting...">
+                                    <Setter Property="Background" Value="{DynamicResource BrushInfoAlt}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="Installing...">
+                                    <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                        <Style TargetType="GridViewColumnHeader">
+                            <Setter Property="Background" Value="{DynamicResource BrushSurface1}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}"/>
+                            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                        </Style>
+                    </ListView.Resources>
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Mod Name" Width="280" DisplayMemberBinding="{Binding Name}" />
+                            <GridViewColumn Header="Local Version" Width="100" DisplayMemberBinding="{Binding LocalVersion}" />
+                            <GridViewColumn Header="Server Version" Width="100" DisplayMemberBinding="{Binding ServerVersion}" />
+                            <GridViewColumn Header="Status" Width="90" DisplayMemberBinding="{Binding Status}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Border>
+
+            <!-- Admin panel container: header is in the top header row; keep container collapsed at runtime but visible in designer -->
+            <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top" MinHeight="60" MinWidth="200">
+                <Border Name="AdminPanel" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
+                    <StackPanel Orientation="Horizontal">
+                        <Button Name="KillHeadlessButton" Content="Kill Headless" Padding="16,4,16,4" Margin="0,0,10,0" Background="{DynamicResource BrushDanger}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <!-- Middle content placeholder (kept for layout consistency) -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+            <!-- Main content placeholder removed to avoid unresolved 'tabs' symbol; keep an empty container here -->
+        </StackPanel>
+
+        <!-- Bottom row: Quick Status and Play button -->
+        <Grid Grid.Row="4" Height="Auto" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Margin="0,0,10,0" HorizontalAlignment="Left" Orientation="Vertical">
+                <!-- Quick Status header and refresh button grouped together -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
+                    <TextBlock Text="Quick Status" Foreground="{DynamicResource BrushTextPrimary}" FontWeight="Bold" FontSize="12" Margin="0,0,8,0" />
+                    <Button Name="RefreshButton" Content="Check for server status" Height="24" Margin="0,0,0,0" Padding="8,0"
+                            Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                </StackPanel>
+
+                <!-- Rounded container: Border provides CornerRadius -->
+                <Border Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <!-- Compact two-row grid: top row = three server statuses, bottom row = existing quick status items arranged horizontally -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Top row: three server status panels (all font size 12, compact min widths) -->
+                        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,10,5">
+                            <TextBlock Text="Mod Manager Server: " FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Name="ServerStatusText" Text="Checking..." Foreground="{DynamicResource BrushTextMuted}" FontSize="12" MinWidth="60" MaxWidth="140" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,10,5">
+                            <TextBlock Text="SPT Server: " FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Name="SptServerStatusText" Text="Checking..." Foreground="{DynamicResource BrushTextMuted}" FontSize="12" MinWidth="60" MaxWidth="140" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,0,5">
+                            <TextBlock Text="Headless: " FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,8,0" />
+                            <TextBlock Name="HeadlessStatusText" Text="Checking..." Foreground="{DynamicResource BrushTextMuted}" FontSize="12" MinWidth="60" MaxWidth="140" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <!-- Bottom row: existing quick status items (font size 12). Allow config message to be longer but let it shrink as needed -->
+                        <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,10,5">
+                            <TextBlock Text="Config sync status: " Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,10,0" />
+                            <TextBlock Name="SyncStatusText" Text="Checking..." Foreground="{DynamicResource BrushTextMuted}" FontSize="12" MinWidth="120" MaxWidth="360" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,10,5">
+                            <TextBlock Text="Current SPT version: " Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,10,0" />
+                            <TextBlock Name="CurrentSptVersionText" Text="Checking..." Foreground="{DynamicResource BrushTextMuted}" FontSize="12" MinWidth="80" MaxWidth="200" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,5,0,5">
+                            <TextBlock Name="StatusTextBlock" Text="" Margin="0,0,0,0" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" MinWidth="80" MaxWidth="220" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </StackPanel>
+
+            <!-- Play button anchored to bottom-right in column 1 -->
+            <Button Grid.Column="1" Name="LaunchOrUpdateButton" Content="Play" Width="120" Height="40" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                    Background="{DynamicResource BrushAccentAlt}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+        </Grid>
+
+    </Grid>
+</UserControl>

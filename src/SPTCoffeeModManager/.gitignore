@@ -1,0 +1,39 @@
+# Build results
+bin/
+obj/
+publish/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / JetBrains
+.idea/
+
+# VS Code
+.vscode/
+
+# Visual Studio
+.vs/
+
+# Build logs
+*.log
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Compiled binaries
+*.dll
+*.exe
+*.pdb
+
+# Backup & temp files
+*~
+*.tmp
+
+# DotSettings (user-specific)
+*.DotSettings.user

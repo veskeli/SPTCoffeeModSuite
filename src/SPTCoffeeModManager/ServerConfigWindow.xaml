@@ -1,0 +1,10 @@
+﻿<!-- ServerConfigWindow.xaml removed. Server configuration UI has been moved into Tabs/SettingsTab.xaml.
+     This placeholder file keeps the project structure intact.
+-->
+<UserControl x:Class="SPTCoffeeModManager.ServerConfigWindow_RemovedPlaceholder"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <TextBlock Text="ServerConfigWindow removed - use Settings tab" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray" />
+    </Grid>
+</UserControl>

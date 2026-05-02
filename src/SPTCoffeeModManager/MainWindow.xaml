@@ -1,0 +1,143 @@
+﻿<Window x:Class="SPTCoffeeModManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:sptCoffeeModManager="clr-namespace:SPTCoffeeModManager"
+        xmlns:tabs="clr-namespace:SPTCoffeeModManager.Tabs"
+        mc:Ignorable="d"
+        Title="SPT Coffee Mod Manager" Height="550" Width="1000"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BrushAppBackground}" Foreground="{DynamicResource BrushTextPrimary}"
+        WindowStyle="None">
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <sptCoffeeModManager:WindowHeader Grid.Row="0" HeaderText="SPT Coffee Mod Manager" />
+
+        <!-- Main Content with Vertical Tab Control -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="130" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Tab Buttons (Vertical) -->
+            <StackPanel Grid.Column="0" Orientation="Vertical" Background="{DynamicResource BrushSurface1}" Margin="0">
+
+                <!-- Coffee Cup Icon -->
+
+                <Image Source="{StaticResource IconCoffeeCup}"
+                       Width="40"
+                       Height="40"
+                       Margin="10"
+                       HorizontalAlignment="Center"/>
+
+                <Button Name="HomeTabButton"
+                        Height="40"
+                        Width="Auto"
+                        HorizontalAlignment="Left"
+                        Background="{DynamicResource BrushAccent}"
+                        BorderThickness="0"
+                        Click="HomeTab_Click"
+                        Cursor="Hand"
+                        Margin="10,5,10,5"
+                        HorizontalContentAlignment="Left"
+                        Padding="10,4,10,4">
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+
+                        <!-- HOME ICON -->
+                        <Path Data="{StaticResource IconHome}"
+                              Fill="{DynamicResource BrushTextPrimary}"
+                              Stretch="Uniform"
+                              Width="18"
+                              Height="18"/>
+
+                        <!-- HOME TEXT -->
+                        <TextBlock Text="Home"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+
+                    </StackPanel>
+                </Button>
+                <Button Name="ModsTabButton"
+                        Height="40"
+                        Width="Auto"
+                        HorizontalAlignment="Left"
+                        Background="{DynamicResource BrushSurface1}"
+                        BorderThickness="0"
+                        Click="ModsTab_Click"
+                        Cursor="Hand"
+                        Margin="10,5,10,5"
+                        HorizontalContentAlignment="Left"
+                        Padding="10,4,10,4">
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+
+                        <!-- MODS ICON -->
+                        <Image Source="{StaticResource IconMods}"
+                               Width="18"
+                               Height="18"/>
+
+                        <!-- MODS TEXT -->
+                        <TextBlock Text="Mods"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+
+                    </StackPanel>
+                </Button>
+                <Button Name="SettingsTabButton"
+                        Height="40"
+                        Width="Auto"
+                        HorizontalAlignment="Left"
+                        Background="{DynamicResource BrushSurface1}"
+                        BorderThickness="0"
+                        Click="SettingsTab_Click" Cursor="Hand"
+                        Margin="10,5,10,5"
+                        HorizontalContentAlignment="Left"
+                        Padding="10,4,10,4">
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+
+                        <!-- SETTINGS ICON -->
+                        <Image Source="{StaticResource IconSettings}"
+                               Width="18"
+                               Height="18"/>
+
+                        <!-- SETTINGS TEXT -->
+                        <TextBlock Text="Settings"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0"
+                                   Foreground="{DynamicResource BrushTextPrimary}" />
+
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+
+            <!-- Tab Content -->
+            <Grid Grid.Column="1" Background="{DynamicResource BrushAppBackground}" Margin="5">
+                <!-- Home Tab -->
+                <tabs:HomeTab x:Name="HomeTabContent" />
+
+                <!-- Mods Tab -->
+                <tabs:ModsTab x:Name="ModsTabContent" Visibility="Collapsed" />
+
+                <!-- Settings Tab -->
+                <tabs:SettingsTab x:Name="SettingsTabContent" Visibility="Collapsed" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
