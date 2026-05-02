@@ -4,9 +4,7 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Threading;
-using Microsoft.AspNetCore.SignalR.Client;
 using System.Windows.Interop;
 
 namespace SPTCoffeeModManager;
@@ -16,6 +14,9 @@ namespace SPTCoffeeModManager;
 /// </summary>
 public partial class MainWindow
 {
+    private static readonly HttpClient SharedHttpClient = new();
+    private static readonly HttpClient DownloadHttpClient = new() { Timeout = TimeSpan.FromMinutes(120) };
+
     private readonly string? _modsFolder;
     private readonly string? _pluginsConfigFolder;
     private readonly string? _clientPath;
@@ -151,7 +152,7 @@ public partial class MainWindow
     private async Task InitializeSignalR()
     {
         // Subscribe to the shared SignalR service events and start the connection.
-        var svc = SPTCoffeeModManager.Services.SignalRService.Instance;
+        var svc = Services.SignalRService.Instance;
 
         // Unsubscribe first to avoid duplicate handlers if called multiple times
         svc.ServerRestarting -= OnServerRestarting;
@@ -196,10 +197,9 @@ public partial class MainWindow
 
     private async Task<List<ModEntry>> GetServerModsAsync()
     {
-        using var client = new HttpClient();
         try
         {
-            var response = await client.GetStringAsync($"{BaseUrl}/PluginVersions.json");
+            var response = await SharedHttpClient.GetStringAsync($"{BaseUrl}/PluginVersions.json");
             var mods = JsonSerializer.Deserialize<List<ModEntry>>(response)!;
             return mods ?? new List<ModEntry>();
         }
@@ -281,8 +281,7 @@ public partial class MainWindow
             // Load current spt version
             if (_modsFolder != null)
             {
-                using var client = new HttpClient();
-                var response = await client.GetAsync($"{BaseUrl}/spt/version");
+                var response = await SharedHttpClient.GetAsync($"{BaseUrl}/spt/version");
                 var bNotSuccessful = true;
 
                 var sptCoreDll = Path.Combine(_modsFolder, "spt","spt-core.dll");
@@ -355,11 +354,11 @@ public partial class MainWindow
         // Don't open multiple updater windows
         foreach (Window w in Application.Current.Windows)
         {
-            if (w is SPTUpdater)
+            if (w is SptUpdater)
                 return;
         }
 
-        var updateWindow = new SPTUpdater(BaseUrl, _basePath)
+        var updateWindow = new SptUpdater(BaseUrl, _basePath)
         {
             Owner = this,
             WindowStartupLocation = WindowStartupLocation.CenterOwner
@@ -383,8 +382,7 @@ public partial class MainWindow
     {
         try
         {
-            using var client = new HttpClient();
-            var response = await client.GetAsync($"{BaseUrl}/sptserver/running");
+            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/sptserver/running");
             // If response is successful, server is online
             if (response.IsSuccessStatusCode)
             {
@@ -417,8 +415,7 @@ public partial class MainWindow
     {
         try
         {
-            using var client = new HttpClient();
-            var responseHeadless = await client.GetAsync($"{BaseUrl}/headless/running");
+            var responseHeadless = await SharedHttpClient.GetAsync($"{BaseUrl}/headless/running");
             if (responseHeadless.IsSuccessStatusCode)
             {
                 var content = await responseHeadless.Content.ReadAsStringAsync();
@@ -529,10 +526,9 @@ public partial class MainWindow
 
     private async Task<List<ConfigInfo>> GetServerConfigsAsync()
     {
-        using var client = new HttpClient();
         try
         {
-            var response = await client.GetStringAsync($"{BaseUrl}/ConfigFiles.json");
+            var response = await SharedHttpClient.GetStringAsync($"{BaseUrl}/ConfigFiles.json");
             var configs = JsonSerializer.Deserialize<List<ConfigInfo>>(response)!;
             return configs ?? new List<ConfigInfo>();
         }
@@ -628,9 +624,8 @@ public partial class MainWindow
                     {
                         try
                         {
-                            using var client = new HttpClient();
                             var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
-                            var data = await client.GetByteArrayAsync(url);
+                            var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
                             await File.WriteAllBytesAsync(destPath, data);
@@ -648,9 +643,8 @@ public partial class MainWindow
                     {
                         try
                         {
-                            using var client = new HttpClient();
                             var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
-                            var data = await client.GetByteArrayAsync(url);
+                            var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
                             await File.WriteAllBytesAsync(destPath, data);
@@ -677,9 +671,8 @@ public partial class MainWindow
                     {
                         try
                         {
-                            using var client = new HttpClient();
                             var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
-                            var data = await client.GetByteArrayAsync(url);
+                            var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
                             await File.WriteAllBytesAsync(destPath, data);
@@ -777,8 +770,6 @@ public partial class MainWindow
     private async Task<bool> DownloadAndUpdateMods(List<ModStatusEntry> mods)
     {
         var success = true;
-        using var client = new HttpClient();
-        client.Timeout = TimeSpan.FromMinutes(120); // 2 hours timeout for large mods
 
         foreach (var mod in mods)
         {
@@ -810,7 +801,7 @@ public partial class MainWindow
 
                 // If download states are not supported, fallback to simple download
                 mod.Status = "Downloading...";
-                using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+                using (var response = await DownloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
                 {
                     response.EnsureSuccessStatusCode();
 
@@ -1037,13 +1028,12 @@ public partial class MainWindow
     {
         if (!string.IsNullOrWhiteSpace(secretKey))
         {
-            using var client = new HttpClient();
             try
             {
                 var url = $"{BaseUrl}/admin/validate?secret={secretKey}";
                 try
                 {
-                    var response = client.GetStringAsync(url).Result?.Trim();
+                    var response = SharedHttpClient.GetStringAsync(url).Result.Trim();
                     if (!string.IsNullOrEmpty(response))
                     {
                         try
@@ -1134,11 +1124,10 @@ public partial class MainWindow
             return;
 
         // Check if headless server is running /admin/headless/running with secret
-        using var clientCheck = new HttpClient();
         try
         {
             var urlCheck = $"{BaseUrl}/admin/headless/running?secret={_secret}";
-            var responseCheck = clientCheck.GetStringAsync(urlCheck).Result?.Trim();
+            var responseCheck = SharedHttpClient.GetStringAsync(urlCheck).Result.Trim();
             if (!string.Equals(responseCheck, "true", StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show("Headless server is not running. Cannot send shutdown command.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -1153,11 +1142,10 @@ public partial class MainWindow
         }
 
         // Send command to server /admin/headless/close with secret
-        using var client = new HttpClient();
         try
         {
             var url = $"{BaseUrl}/admin/headless/close?secret={_secret}";
-            var response = client.GetStringAsync(url).Result?.Trim();
+            var response = SharedHttpClient.GetStringAsync(url).Result.Trim();
 
             if (string.Equals(response, "true", StringComparison.OrdinalIgnoreCase))
             {
@@ -1216,7 +1204,7 @@ public partial class MainWindow
         {
             Interval = TimeSpan.FromMinutes(5)
         };
-        _serverCheckTimer.Tick += async (s, e) =>
+        _serverCheckTimer.Tick += async (_, _) =>
         {
             // Check server status
             await CheckServerStatus();
@@ -1289,12 +1277,9 @@ public partial class MainWindow
 
     private static System.Windows.Media.Brush GetBrush(string key)
     {
-        return (System.Windows.Media.Brush)Application.Current.Resources[key];
+        return Application.Current.Resources[key] as System.Windows.Media.Brush
+               ?? System.Windows.Media.Brushes.Transparent;
     }
-
-    // Helper properties to access tab controls
-     private Button RefreshModsButton => ModsTabContent.RefreshModsButtonRef;
-     private Button CheckForModsButton => ModsTabContent.CheckForModsButtonRef;
 
     // Expose server config getters/setters so SettingsTab can call them
     public string GetServerIp() => _serverIp;
@@ -1354,7 +1339,7 @@ public class AdminConfig
     public string Note { get; set; } = ""; // For easy edit, e.g. "My own pc"
     public string Secret { get; set; } = ""; // Like password
     public bool IsEnabled { get; set; } = true; // So can be disabled without deleting
-    public bool AllowHeadlessClose { get; set; } = false; // Whether this admin can close headless client
+    public bool AllowHeadlessClose { get; set; } // Whether this admin can close headless client
 }
 
 // Additional Launcher settings

@@ -6,11 +6,12 @@ using System.Windows.Interop;
 
 namespace SPTCoffeeModManager;
 
-public partial class SPTUpdater : Window
+public partial class SptUpdater : Window
 {
-    private bool _downloadSuccessful = false;
+    private static readonly HttpClient UpdaterHttpClient = new() { Timeout = TimeSpan.FromMinutes(60) };
 
-    public SPTUpdater(string baseUrl, string basePath)
+
+    public SptUpdater(string baseUrl, string basePath)
     {
         InitializeComponent();
 
@@ -39,8 +40,8 @@ public partial class SPTUpdater : Window
     private async Task UpdateAsync(string baseUrl, string basePath)
     {
         var updateUrl = $"{baseUrl}/spt/update";
-        var sptTempPath = System.IO.Path.Combine(basePath, "spt_temp");
-        System.IO.Directory.CreateDirectory(sptTempPath);
+        var sptTempPath = Path.Combine(basePath, "spt_temp");
+        Directory.CreateDirectory(sptTempPath);
 
         var success = await StartDownloadAsync(updateUrl, sptTempPath);
 
@@ -92,18 +93,17 @@ public partial class SPTUpdater : Window
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(60) };
-            using var resp = await http.GetAsync(updateUrl, HttpCompletionOption.ResponseHeadersRead);
+            using var resp = await UpdaterHttpClient.GetAsync(updateUrl, HttpCompletionOption.ResponseHeadersRead);
             resp.EnsureSuccessStatusCode();
 
             var total = resp.Content.Headers.ContentLength ?? -1L;
             await using var source = await resp.Content.ReadAsStreamAsync();
-            var tempFile = System.IO.Path.Combine(tempFilePath, "spt_update.zip");
+            var tempFile = Path.Combine(tempFilePath, "spt_update.zip");
 
-            if (System.IO.File.Exists(tempFile))
-                System.IO.File.Delete(tempFile);
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
 
-            await using var dest = System.IO.File.Create(tempFile);
+            await using var dest = File.Create(tempFile);
 
             var buffer = new byte[81920];
             long downloaded = 0;
