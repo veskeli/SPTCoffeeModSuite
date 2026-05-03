@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 using System.Windows.Interop;
+using SPTCoffee.Contracts.Models;
 
 namespace SPTCoffeeModManager;
 
@@ -201,7 +202,7 @@ public partial class MainWindow
 
     private string BaseUrl => $"http://{_serverIp}:{_serverPort}";
 
-    private async Task<List<ModEntry>> GetServerModsAsync()
+    private async Task<List<ModInfo>> GetServerModsAsync()
     {
         try
         {
@@ -209,21 +210,21 @@ public partial class MainWindow
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();
-                var dbMods = JsonSerializer.Deserialize<List<ModEntry>>(json);
-                return dbMods ?? new List<ModEntry>();
+                var dbMods = JsonSerializer.Deserialize<List<ModInfo>>(json);
+                return dbMods ?? new List<ModInfo>();
             }
 
-            return new List<ModEntry>();
+            return new List<ModInfo>();
         }
         catch
         {
-            return new List<ModEntry>();
+            return new List<ModInfo>();
         }
     }
 
-    private List<ModEntry> GetLocalMods()
+    private List<ModInfo> GetLocalMods()
     {
-        var mods = new List<ModEntry>();
+        var mods = new List<ModInfo>();
 
         if (!Directory.Exists(_modsFolder))
             return mods;
@@ -251,7 +252,7 @@ public partial class MainWindow
 
             var version = FileVersionInfo.GetVersionInfo(dllFiles[0]).FileVersion ?? "0";
 
-            mods.Add(new ModEntry
+            mods.Add(new ModInfo
             {
                 Name = folderName,
                 Version = version,
@@ -272,7 +273,7 @@ public partial class MainWindow
 
             var version = FileVersionInfo.GetVersionInfo(dll).FileVersion ?? "0";
 
-            mods.Add(new ModEntry
+            mods.Add(new ModInfo
             {
                 Name = modName,
                 Version = version,
@@ -514,7 +515,7 @@ public partial class MainWindow
         HomeTabContent.SetLaunchOrUpdateButtonEnabled(true);
     }
 
-    private List<ModStatusEntry> CompareMods(List<ModEntry> serverMods, List<ModEntry> localMods)
+    private List<ModStatusEntry> CompareMods(List<ModInfo> serverMods, List<ModInfo> localMods)
     {
         var statusList = new List<ModStatusEntry>();
 
@@ -562,7 +563,7 @@ public partial class MainWindow
         return statusList;
     }
 
-    private bool ModsMatch(List<ModEntry> serverMods, List<ModEntry> localMods)
+    private bool ModsMatch(List<ModInfo> serverMods, List<ModInfo> localMods)
     {
         // Check if local and server mod counts match
         if (localMods.Count != serverMods.Count)
@@ -1369,21 +1370,6 @@ public class AppConfig
     public string? Secret { get; set; } // Admin secret for server control
 }
 
-public class ModEntry
-{
-    public required string Name { get; set; }
-    public required string Version { get; set; }
-    public required string FileName { get; set; }       // Name of the zip file
-    public required bool IsFolderMod { get; set; }     // true if folder-based mod
-}
-
-public class ConfigInfo
-{
-    public string FileName { get; set; } = "";
-    public DateTime LastModified { get; set; }
-    public bool IsEnforced { get; set; } = false; // If true, launcher will get this config file from server on launch
-}
-
 public class ModStatusEntry
 {
     public required string Name { get; set; }
@@ -1393,22 +1379,3 @@ public class ModStatusEntry
     public required bool IsFolderMod { get; set; }
 }
 
-// Admin config so launcher can authenticate admin commands. Array of these in JSON so multiple admins can be set up.
-public class AdminConfig
-{
-    public string Note { get; set; } = ""; // For easy edit, e.g. "My own pc"
-    public string Secret { get; set; } = ""; // Like password
-    public bool IsEnabled { get; set; } = true; // So can be disabled without deleting
-    public bool AllowHeadlessClose { get; set; } // Whether this admin can close headless client
-}
-
-// Additional Launcher settings
-public class LauncherSettings
-{
-    // Excluded mods
-    public List<string> ExcludedMods { get; set; } = new List<string>();
-    // Excluded mods folders
-    public List<string> ExcludedModFolders { get; set; } = new List<string>();
-    // Excluded config files
-    public List<string> ExcludedConfigs { get; set; } = new List<string>();
-}

@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.SignalR.Client;
 using System.Windows.Media;
 using System.Windows.Threading;
 using SQLitePCL;
+using SPTCoffee.Contracts.Models;
 using MessageBox = System.Windows.MessageBox;
 
 namespace SPTServerManager;
@@ -1522,37 +1523,3 @@ public class BootstrapConfig
     public string DatabaseFileName { get; set; } = "MainDatabase\\SPTCoffee.db";
 }
 
-public class ConfigInfo
-{
-    public string FileName { get; set; } = "";
-    public DateTime LastModified { get; set; }
-    public bool IsEnforced { get; set; } = false; // If true, launcher will get this config file from server on launch
-}
-
-public class ModInfo
-{
-    public string Name { get; set; } = "";
-    public string Version { get; set; } = "";
-    public string FileName { get; set; } = "";
-    public bool IsFolderMod { get; set; } = false;
-}
-
-// Admin config so launcher can authenticate admin commands. Array of these in JSON so multiple admins can be set up.
-public class AdminConfig
-{
-    public string Note { get; set; } = ""; // For easy edit, e.g. "My own pc"
-    public string Secret { get; set; } = ""; // Like password
-    public bool IsEnabled { get; set; } = true; // So can be disabled without deleting
-    public bool AllowHeadlessClose { get; set; } = false; // Whether this admin can close headless client
-}
-
-// Additional Launcher settings
-public class LauncherSettings
-{
-    // Excluded mods
-    public List<string> ExcludedMods { get; set; } = new List<string>();
-    // Excluded mods folders
-    public List<string> ExcludedModFolders { get; set; } = new List<string>();
-    // Excluded config files
-    public List<string> ExcludedConfigs { get; set; } = new List<string>();
-}

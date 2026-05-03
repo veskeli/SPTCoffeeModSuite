@@ -17,4 +17,8 @@
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.6" />
     </ItemGroup>
 
+    <ItemGroup>
+        <ProjectReference Include="..\SPTCoffee.Contracts\SPTCoffee.Contracts.csproj" />
+    </ItemGroup>
+
 </Project>

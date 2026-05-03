@@ -16,4 +16,8 @@
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\SPTCoffee.Contracts\SPTCoffee.Contracts.csproj" />
+  </ItemGroup>
+
 </Project>

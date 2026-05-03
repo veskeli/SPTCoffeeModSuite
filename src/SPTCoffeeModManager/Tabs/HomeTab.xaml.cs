@@ -2,7 +2,7 @@
 using System.Windows;
 using System.ComponentModel;
 using System.Windows.Media;
-using SPTCoffeeModManager; // for ModStatusEntry and AdminConfig
+using SPTCoffee.Contracts.Models;
 
 namespace SPTCoffeeModManager.Tabs;
 
