@@ -39,7 +39,7 @@ public partial class SptUpdater : Window
 
     private async Task UpdateAsync(string baseUrl, string basePath)
     {
-        var updateUrl = $"{baseUrl}/spt/update";
+        var updateUrl = $"{baseUrl}/api/spt/update";
         var sptTempPath = Path.Combine(basePath, "spt_temp");
         Directory.CreateDirectory(sptTempPath);
 

@@ -205,9 +205,15 @@ public partial class MainWindow
     {
         try
         {
-            var response = await SharedHttpClient.GetStringAsync($"{BaseUrl}/PluginVersions.json");
-            var mods = JsonSerializer.Deserialize<List<ModEntry>>(response)!;
-            return mods ?? new List<ModEntry>();
+            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/api/plugins");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var dbMods = JsonSerializer.Deserialize<List<ModEntry>>(json);
+                return dbMods ?? new List<ModEntry>();
+            }
+
+            return new List<ModEntry>();
         }
         catch
         {
@@ -333,7 +339,7 @@ public partial class MainWindow
             // --- Server comparison (only attempted if server is already reachable) ---
             try
             {
-                var response = await SharedHttpClient.GetAsync($"{BaseUrl}/spt/version");
+                var response = await SharedHttpClient.GetAsync($"{BaseUrl}/api/spt/version");
                 if (!response.IsSuccessStatusCode)
                 {
                     Debug.WriteLine($"Server version check returned non-success status: {response.StatusCode}");
@@ -430,7 +436,7 @@ public partial class MainWindow
     {
         try
         {
-            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/sptserver/running");
+            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/api/status/spt-server");
             // If response is successful, server is online
             if (response.IsSuccessStatusCode)
             {
@@ -463,7 +469,7 @@ public partial class MainWindow
     {
         try
         {
-            var responseHeadless = await SharedHttpClient.GetAsync($"{BaseUrl}/headless/running");
+            var responseHeadless = await SharedHttpClient.GetAsync($"{BaseUrl}/api/status/headless");
             if (responseHeadless.IsSuccessStatusCode)
             {
                 var content = await responseHeadless.Content.ReadAsStringAsync();
@@ -576,9 +582,15 @@ public partial class MainWindow
     {
         try
         {
-            var response = await SharedHttpClient.GetStringAsync($"{BaseUrl}/ConfigFiles.json");
-            var configs = JsonSerializer.Deserialize<List<ConfigInfo>>(response)!;
-            return configs ?? new List<ConfigInfo>();
+            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/api/config-files");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var dbConfigs = JsonSerializer.Deserialize<List<ConfigInfo>>(json);
+                return dbConfigs ?? new List<ConfigInfo>();
+            }
+
+            return new List<ConfigInfo>();
         }
         catch
         {
@@ -672,7 +684,7 @@ public partial class MainWindow
                     {
                         try
                         {
-                            var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
+                            var url = $"{BaseUrl}/api/config-files/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
                             var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
@@ -691,7 +703,7 @@ public partial class MainWindow
                     {
                         try
                         {
-                            var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
+                            var url = $"{BaseUrl}/api/config-files/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
                             var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
@@ -719,7 +731,7 @@ public partial class MainWindow
                     {
                         try
                         {
-                            var url = $"{BaseUrl}/configs/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
+                            var url = $"{BaseUrl}/api/config-files/{Path.GetFileNameWithoutExtension(serverConfig.FileName)}";
                             var data = await SharedHttpClient.GetByteArrayAsync(url);
 
                             var destPath = Path.Combine(_pluginsConfigFolder!, serverConfig.FileName);
@@ -841,7 +853,7 @@ public partial class MainWindow
                     continue;
                 }
 
-                var url = $"{BaseUrl}/mods/{modInfo.Name}";
+                var url = $"{BaseUrl}/api/plugins/{modInfo.Name}/zip";
 
                 // --- Streamed download with progress ---
                 var tempZip = Path.Combine(Path.GetTempPath(), modInfo.FileName);
@@ -1078,7 +1090,7 @@ public partial class MainWindow
         {
             try
             {
-                var url = $"{BaseUrl}/admin/validate?secret={secretKey}";
+                var url = $"{BaseUrl}/api/admin/validate?secret={secretKey}";
                 try
                 {
                     var response = SharedHttpClient.GetStringAsync(url).Result.Trim();
@@ -1174,7 +1186,7 @@ public partial class MainWindow
         // Check if headless server is running /admin/headless/running with secret
         try
         {
-            var urlCheck = $"{BaseUrl}/admin/headless/running?secret={_secret}";
+            var urlCheck = $"{BaseUrl}/api/admin/headless/running?secret={_secret}";
             var responseCheck = SharedHttpClient.GetStringAsync(urlCheck).Result.Trim();
             if (!string.Equals(responseCheck, "true", StringComparison.OrdinalIgnoreCase))
             {
@@ -1192,7 +1204,7 @@ public partial class MainWindow
         // Send command to server /admin/headless/close with secret
         try
         {
-            var url = $"{BaseUrl}/admin/headless/close?secret={_secret}";
+            var url = $"{BaseUrl}/api/admin/headless/close?secret={_secret}";
             var response = SharedHttpClient.GetStringAsync(url).Result.Trim();
 
             if (string.Equals(response, "true", StringComparison.OrdinalIgnoreCase))

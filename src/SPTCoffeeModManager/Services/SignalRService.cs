@@ -42,7 +42,7 @@ namespace SPTCoffeeModManager.Services
             }
 
             _hubConnection = new HubConnectionBuilder()
-                .WithUrl($"{baseUrl}/hub")
+                .WithUrl($"{baseUrl}/api/hub")
                 .WithAutomaticReconnect()
                 .Build();
 

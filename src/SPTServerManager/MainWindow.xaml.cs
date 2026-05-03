@@ -5,9 +5,11 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.SignalR.Client;
 using System.Windows.Media;
 using System.Windows.Threading;
+using SQLitePCL;
 using MessageBox = System.Windows.MessageBox;
 
 namespace SPTServerManager;
@@ -20,6 +22,7 @@ public partial class MainWindow : Window
     private readonly string? _adminConfigPath;
     private readonly string? _launcherSettingsPath;
     private readonly string? _exeFolder;
+    private string? _databasePath;
 
     private readonly DispatcherTimer _launcherButtonCooldownTimer = new();
     private readonly DispatcherTimer _sptServerButtonCooldownTimer = new();
@@ -49,6 +52,13 @@ public partial class MainWindow : Window
         "com.fika.headless.cfg"
     };
 
+    private const string DefaultSptCoffeeDbFileName = "MainDatabase\\SPTCoffee.db";
+    private const string PluginZipFolderName = "PluginZip";
+    private const string AdditionalModsFolderName = "AdditionalMods";
+    private const string MainDatabaseFolderName = "MainDatabase";
+    private const string SptUpdateFolderName = "SptUpdate";
+    private const string ConfigFilesFolderName = "ConfigFiles";
+
     public MainWindow()
     {
         try
@@ -72,7 +82,9 @@ public partial class MainWindow : Window
         }
 
         InitializeComponent();
+        Batteries_V2.Init();
         LoadConfig();
+        EnsureStorageFolders();
 
         // Auto-start if the -AutoStartServers argument was supplied
         var args = Environment.GetCommandLineArgs();
@@ -124,7 +136,7 @@ public partial class MainWindow : Window
     private async Task InitializeSignalR()
     {
         _hubConnection = new HubConnectionBuilder()
-            .WithUrl($"{BaseUrl}/hub")
+            .WithUrl($"{BaseUrl}/api/hub")
             .WithAutomaticReconnect()
             .Build();
 
@@ -153,10 +165,34 @@ public partial class MainWindow : Window
     {
         try
         {
+            BootstrapConfig? bootstrap = null;
+            ServerConfig? legacyConfig = null;
+
             if (File.Exists(_configPath))
             {
                 var json = File.ReadAllText(_configPath);
-                Config = JsonSerializer.Deserialize<ServerConfig>(json) ?? new ServerConfig();
+                bootstrap = JsonSerializer.Deserialize<BootstrapConfig>(json);
+                legacyConfig = JsonSerializer.Deserialize<ServerConfig>(json);
+            }
+
+            Config.Port = bootstrap?.Port > 0 ? bootstrap.Port : (legacyConfig?.Port ?? Config.Port);
+            _databasePath = ResolveDatabasePath(bootstrap?.DatabaseFileName);
+
+            if (_databasePath != null)
+            {
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+                EnsureSptCoffeeSchema(connection);
+
+                if (legacyConfig != null)
+                {
+                    MigrateLegacySettingsToDatabase(connection, legacyConfig);
+                }
+                MigrateLegacyAdminsToDatabase(connection);
+
+                var dbSettings = LoadManagerSettingsFromDatabase(connection);
+                Config.SptServerFolder = dbSettings.SptServerFolder;
+                Config.AdditionalModsPath = dbSettings.AdditionalModsPath;
             }
         }
         catch (System.Exception ex)
@@ -170,10 +206,24 @@ public partial class MainWindow : Window
         try
         {
             var cfg = config ?? Config;
-            var json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
+
+            var bootstrap = new BootstrapConfig
+            {
+                Port = cfg.Port,
+                DatabaseFileName = GetDatabasePathForBootstrapSave()
+            };
+            var json = JsonSerializer.Serialize(bootstrap, new JsonSerializerOptions { WriteIndented = true });
             if (_configPath != null)
             {
                 File.WriteAllText(_configPath, json);
+            }
+
+            if (_databasePath != null)
+            {
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+                EnsureSptCoffeeSchema(connection);
+                SaveManagerSettingsToDatabase(connection, cfg);
             }
         }
         catch (System.Exception ex)
@@ -247,18 +297,11 @@ public partial class MainWindow : Window
                 validPaths.Add(modsPath2);
 
             // Delete old zip folder if exists
-            var oldZipFolder = Path.Combine(exeFolder, "temp", "ModZips");
+            var oldZipFolder = GetPluginZipFolder(exeFolder);
             if (Directory.Exists(oldZipFolder))
             {
                 Directory.Delete(oldZipFolder, true);
             }
-            // Delete old PluginVersions.json if exists
-            var oldJsonPath = Path.Combine(exeFolder, "PluginVersions.json");
-            if (File.Exists(oldJsonPath))
-            {
-                File.Delete(oldJsonPath);
-            }
-
             if (validPaths.Count == 0)
             {
                 MessageBox.Show("No valid mod folders found.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -269,13 +312,21 @@ public partial class MainWindow : Window
             var result = await Task.Run(() =>
             {
                 int created = 0, updated = 0;
+                var mergedMods = new Dictionary<string, ModInfo>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var path in validPaths)
                 {
                     var r = ProcessModFolder(path, exeFolder);
                     created += r.created;
                     updated += r.updated;
+
+                    foreach (var mod in r.mods)
+                    {
+                        mergedMods[mod.Name] = mod;
+                    }
                 }
+
+                SavePluginsToDatabase(exeFolder, mergedMods.Values);
 
                 return (created, updated);
             });
@@ -293,12 +344,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private (int created, int updated) ProcessModFolder(string modsPath, string exeFolder)
+    private (int created, int updated, List<ModInfo> mods) ProcessModFolder(string modsPath, string exeFolder)
     {
         var excludedMods = new HashSet<string>(_excludedMods, StringComparer.OrdinalIgnoreCase);
         var excludedModFolders = new HashSet<string>(_excludedModFolders, StringComparer.OrdinalIgnoreCase);
 
-        string zipFolder = Path.Combine(exeFolder, "temp", "ModZips");
+        string zipFolder = GetPluginZipFolder(exeFolder);
         Directory.CreateDirectory(zipFolder);
 
         List<ModInfo> pluginList = new();
@@ -403,44 +454,79 @@ public partial class MainWindow : Window
             CreateZip(modName, dll);
         }
 
-        // Write version JSON
-        string jsonPath = Path.Combine(exeFolder, "PluginVersions.json");
+        return (createdCount, updatedCount, pluginList);
+    }
 
-        // Merge with existing `PluginVersions.json` if present
-        List<ModInfo> existingList = new();
-        if (File.Exists(jsonPath))
+    private void SavePluginsToDatabase(string exeFolder, IEnumerable<ModInfo> mods)
+    {
+        var dbPath = _databasePath ?? ResolveDatabasePath(DefaultSptCoffeeDbFileName) ?? Path.Combine(exeFolder, DefaultSptCoffeeDbFileName);
+
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        EnsureSptCoffeeSchema(connection);
+
+        using var tx = connection.BeginTransaction();
+
+        using (var clearCommand = connection.CreateCommand())
         {
-            try
-            {
-                var existingJson = File.ReadAllText(jsonPath);
-                existingList = JsonSerializer.Deserialize<List<ModInfo>>(existingJson) ?? new List<ModInfo>();
-            }
-            catch
-            {
-                existingList = new List<ModInfo>();
-            }
+            clearCommand.Transaction = tx;
+            clearCommand.CommandText = "DELETE FROM plugins;";
+            clearCommand.ExecuteNonQuery();
         }
 
-        // Merge by Name (case-insensitive): update existing entries or add new ones
-        var existingDict = existingList.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
-        foreach (var mod in pluginList)
+        foreach (var mod in mods)
         {
-            if (existingDict.TryGetValue(mod.Name, out var existing))
-            {
-                existing.Version = mod.Version;
-                existing.FileName = mod.FileName;
-                existing.IsFolderMod = mod.IsFolderMod;
-            }
-            else
-            {
-                existingList.Add(mod);
-            }
+            using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = tx;
+            insertCommand.CommandText = @"
+INSERT INTO plugins(name, version, file_name, is_folder_mod, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, $updatedUtc);";
+            insertCommand.Parameters.AddWithValue("$name", mod.Name);
+            insertCommand.Parameters.AddWithValue("$version", mod.Version);
+            insertCommand.Parameters.AddWithValue("$fileName", mod.FileName);
+            insertCommand.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
+            insertCommand.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            insertCommand.ExecuteNonQuery();
         }
 
-        // Persist merged list
-        File.WriteAllText(jsonPath, JsonSerializer.Serialize(existingList, new JsonSerializerOptions { WriteIndented = true }));
+        tx.Commit();
+    }
 
-        return (createdCount, updatedCount);
+    private static void EnsureSptCoffeeSchema(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+CREATE TABLE IF NOT EXISTS plugins (
+    name TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
+    version TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    is_folder_mod INTEGER NOT NULL,
+    updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS configs (
+    file_name TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
+    last_modified_utc TEXT NOT NULL,
+    is_enforced INTEGER NOT NULL,
+    updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note TEXT NOT NULL,
+    secret TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    is_enabled INTEGER NOT NULL,
+    allow_headless_close INTEGER NOT NULL,
+    updated_utc TEXT NOT NULL
+);";
+        command.ExecuteNonQuery();
     }
 
     private void UpdateModsButtonState(bool enabled)
@@ -479,7 +565,7 @@ public partial class MainWindow : Window
     {
         if (_exeFolder != null)
         {
-            var zipFolder = Path.Combine(_exeFolder, "temp", "ModZips");
+            var zipFolder = GetPluginZipFolder(_exeFolder);
             if (Directory.Exists(zipFolder))
             {
                 Process.Start("explorer.exe", zipFolder);
@@ -525,11 +611,20 @@ public partial class MainWindow : Window
             int totalCreated = await Task.Run(() =>
             {
                 int createdTotal = 0;
+                var mergedConfigs = new Dictionary<string, ConfigInfo>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var path in validPaths)
                 {
-                    createdTotal += ProcessConfigFolder(path, _exeFolder);
+                    var result = ProcessConfigFolder(path, _exeFolder);
+                    createdTotal += result.copied;
+
+                    foreach (var config in result.configs)
+                    {
+                        mergedConfigs[config.FileName] = config;
+                    }
                 }
+
+                SaveConfigsToDatabase(_exeFolder, mergedConfigs.Values);
 
                 return createdTotal;
             });
@@ -548,15 +643,15 @@ public partial class MainWindow : Window
         }
     }
 
-    private int ProcessConfigFolder(string configsPath, string exeFolder)
+    private (int copied, List<ConfigInfo> configs) ProcessConfigFolder(string configsPath, string exeFolder)
     {
-        string configFolder = Path.Combine(exeFolder, "temp", "ConfigFiles");
+        string configFolder = GetConfigFilesFolder(exeFolder);
         Directory.CreateDirectory(configFolder);
 
         var excludedConfigs = new HashSet<string>(_excludedConfigs, StringComparer.OrdinalIgnoreCase);
         var configList = new List<ConfigInfo>();
 
-        int created = 0;
+        int copiedCount = 0;
 
         // Process only *.cfg
         foreach (var configFile in Directory.GetFiles(configsPath, "*.cfg", SearchOption.TopDirectoryOnly))
@@ -574,43 +669,231 @@ public partial class MainWindow : Window
 
             var destPath = Path.Combine(configFolder, fileName);
             File.Copy(configFile, destPath, true);
-            created++;
+            copiedCount++;
         }
 
-        string jsonPath = Path.Combine(exeFolder, "ConfigFiles.json");
+        return (copiedCount, configList);
+    }
 
-        // Merge with existing `ConfigFiles.json` if present, preserving existing IsEnforced where applicable
-        List<ConfigInfo> existingList = new();
-        if (File.Exists(jsonPath))
+    private void SaveConfigsToDatabase(string exeFolder, IEnumerable<ConfigInfo> configs)
+    {
+        var dbPath = _databasePath ?? ResolveDatabasePath(DefaultSptCoffeeDbFileName) ?? Path.Combine(exeFolder, DefaultSptCoffeeDbFileName);
+
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        EnsureSptCoffeeSchema(connection);
+
+        var enforcedByFileName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        using (var readCommand = connection.CreateCommand())
         {
-            try
+            readCommand.CommandText = "SELECT file_name, is_enforced FROM configs;";
+            using var reader = readCommand.ExecuteReader();
+            while (reader.Read())
             {
-                var existingJson = File.ReadAllText(jsonPath);
-                existingList = JsonSerializer.Deserialize<List<ConfigInfo>>(existingJson) ?? new List<ConfigInfo>();
-            }
-            catch
-            {
-                existingList = new List<ConfigInfo>();
+                enforcedByFileName[reader.GetString(0)] = reader.GetInt32(1) == 1;
             }
         }
 
-        var existingDict = existingList.ToDictionary(c => c.FileName, StringComparer.OrdinalIgnoreCase);
-        foreach (var cfg in configList)
+        using var tx = connection.BeginTransaction();
+
+        using (var clearCommand = connection.CreateCommand())
         {
-            if (existingDict.TryGetValue(cfg.FileName, out var existing))
-            {
-                // Update last-modified but preserve IsEnforced flag from existing entry
-                existing.LastModified = cfg.LastModified;
-            }
-            else
-            {
-                existingList.Add(cfg);
-            }
+            clearCommand.Transaction = tx;
+            clearCommand.CommandText = "DELETE FROM configs;";
+            clearCommand.ExecuteNonQuery();
         }
 
-        File.WriteAllText(jsonPath, JsonSerializer.Serialize(existingList, new JsonSerializerOptions { WriteIndented = true }));
+        foreach (var config in configs)
+        {
+            var isEnforced = enforcedByFileName.TryGetValue(config.FileName, out var previousValue) && previousValue;
 
-        return created;
+            using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = tx;
+            insertCommand.CommandText = @"
+INSERT INTO configs(file_name, last_modified_utc, is_enforced, updated_utc)
+VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
+            insertCommand.Parameters.AddWithValue("$fileName", config.FileName);
+            insertCommand.Parameters.AddWithValue("$lastModifiedUtc", config.LastModified.ToUniversalTime().ToString("O"));
+            insertCommand.Parameters.AddWithValue("$isEnforced", isEnforced ? 1 : 0);
+            insertCommand.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            insertCommand.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    private string? ResolveDatabasePath(string? dbFileNameOrPath)
+    {
+        if (_exeFolder == null)
+        {
+            return null;
+        }
+
+        var configured = string.IsNullOrWhiteSpace(dbFileNameOrPath) ? DefaultSptCoffeeDbFileName : dbFileNameOrPath;
+        var dbPath = Path.IsPathRooted(configured) ? configured : Path.Combine(_exeFolder, configured);
+        var dbDirectory = Path.GetDirectoryName(dbPath);
+        if (!string.IsNullOrWhiteSpace(dbDirectory))
+        {
+            Directory.CreateDirectory(dbDirectory);
+        }
+
+        return dbPath;
+    }
+
+    private string GetDatabasePathForBootstrapSave()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath) || string.IsNullOrWhiteSpace(_exeFolder))
+        {
+            return DefaultSptCoffeeDbFileName;
+        }
+
+        var relative = Path.GetRelativePath(_exeFolder, _databasePath);
+        return relative.StartsWith("..") ? _databasePath : relative;
+    }
+
+    private void EnsureStorageFolders()
+    {
+        if (_exeFolder == null)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(GetPluginZipFolder(_exeFolder));
+        Directory.CreateDirectory(GetAdditionalModsFolder(_exeFolder));
+        Directory.CreateDirectory(GetMainDatabaseFolder(_exeFolder));
+        Directory.CreateDirectory(GetSptUpdateFolder(_exeFolder));
+        Directory.CreateDirectory(GetConfigFilesFolder(_exeFolder));
+    }
+
+    private static string GetPluginZipFolder(string rootFolder) => Path.Combine(rootFolder, PluginZipFolderName);
+    private static string GetAdditionalModsFolder(string rootFolder) => Path.Combine(rootFolder, AdditionalModsFolderName);
+    private static string GetMainDatabaseFolder(string rootFolder) => Path.Combine(rootFolder, MainDatabaseFolderName);
+    private static string GetSptUpdateFolder(string rootFolder) => Path.Combine(rootFolder, SptUpdateFolderName);
+    private static string GetConfigFilesFolder(string rootFolder) => Path.Combine(rootFolder, ConfigFilesFolderName);
+
+    private static void SaveManagerSettingsToDatabase(SqliteConnection connection, ServerConfig config)
+    {
+        UpsertSetting(connection, "spt_server_folder", config.SptServerFolder);
+        UpsertSetting(connection, "additional_mods_path", config.AdditionalModsPath);
+    }
+
+    private static void MigrateLegacySettingsToDatabase(SqliteConnection connection, ServerConfig legacy)
+    {
+        if (!string.IsNullOrWhiteSpace(GetSetting(connection, "spt_server_folder")))
+        {
+            return;
+        }
+
+        SaveManagerSettingsToDatabase(connection, legacy);
+    }
+
+    private void MigrateLegacyAdminsToDatabase(SqliteConnection connection)
+    {
+        if (LoadAdminsFromDatabase(connection).Count > 0)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_adminConfigPath) || !File.Exists(_adminConfigPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(_adminConfigPath);
+            var admins = JsonSerializer.Deserialize<List<AdminConfig>>(json) ?? new List<AdminConfig>();
+            SaveAdminsToDatabase(connection, admins);
+        }
+        catch
+        {
+            // Keep startup resilient if legacy admin migration fails.
+        }
+    }
+
+    private static List<AdminConfig> LoadAdminsFromDatabase(SqliteConnection connection)
+    {
+        var admins = new List<AdminConfig>();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT note, secret, is_enabled, allow_headless_close FROM admins ORDER BY note COLLATE NOCASE;";
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            admins.Add(new AdminConfig
+            {
+                Note = reader.GetString(0),
+                Secret = reader.GetString(1),
+                IsEnabled = reader.GetInt32(2) == 1,
+                AllowHeadlessClose = reader.GetInt32(3) == 1
+            });
+        }
+
+        return admins;
+    }
+
+    private static void SaveAdminsToDatabase(SqliteConnection connection, IEnumerable<AdminConfig> admins)
+    {
+        using var tx = connection.BeginTransaction();
+
+        using (var clear = connection.CreateCommand())
+        {
+            clear.Transaction = tx;
+            clear.CommandText = "DELETE FROM admins;";
+            clear.ExecuteNonQuery();
+        }
+
+        foreach (var admin in admins)
+        {
+            using var insert = connection.CreateCommand();
+            insert.Transaction = tx;
+            insert.CommandText = @"
+INSERT INTO admins(note, secret, is_enabled, allow_headless_close, updated_utc)
+VALUES($note, $secret, $isEnabled, $allowHeadlessClose, $updatedUtc);";
+            insert.Parameters.AddWithValue("$note", admin.Note ?? string.Empty);
+            insert.Parameters.AddWithValue("$secret", admin.Secret ?? string.Empty);
+            insert.Parameters.AddWithValue("$isEnabled", admin.IsEnabled ? 1 : 0);
+            insert.Parameters.AddWithValue("$allowHeadlessClose", admin.AllowHeadlessClose ? 1 : 0);
+            insert.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            insert.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    private static (string SptServerFolder, string AdditionalModsPath) LoadManagerSettingsFromDatabase(SqliteConnection connection)
+    {
+        var sptServerFolder = GetSetting(connection, "spt_server_folder");
+        var additionalModsPath = GetSetting(connection, "additional_mods_path");
+
+        return (
+            string.IsNullOrWhiteSpace(sptServerFolder) ? @"C:\SPT" : sptServerFolder,
+            additionalModsPath ?? string.Empty
+        );
+    }
+
+    private static string? GetSetting(SqliteConnection connection, string key)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM settings WHERE key = $key LIMIT 1;";
+        command.Parameters.AddWithValue("$key", key);
+        return command.ExecuteScalar() as string;
+    }
+
+    private static void UpsertSetting(SqliteConnection connection, string key, string value)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO settings(key, value, updated_utc)
+VALUES($key, $value, $updatedUtc)
+ON CONFLICT(key) DO UPDATE SET
+    value = excluded.value,
+    updated_utc = excluded.updated_utc;";
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value ?? string.Empty);
+        command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
     }
 
 
@@ -703,7 +986,7 @@ public partial class MainWindow : Window
                     {
                         using var client = new HttpClient();
                         var endpoint = sptServerRunning ? "online" : "offline";
-                        var url = $"http://localhost:{Config.Port}/notify/spt/{endpoint}";
+                        var url = $"http://localhost:{Config.Port}/api/events/spt/{endpoint}";
                         await client.PostAsync(url, null);
                     }
                     catch
@@ -730,7 +1013,7 @@ public partial class MainWindow : Window
                     {
                         using var client = new HttpClient();
                         var endpoint = _isHeadlessWaitingToBeStarted ? "restart" : (headlessClientRunning ? "online" : "offline");
-                        var url = $"http://localhost:{Config.Port}/notify/headless/{endpoint}";
+                        var url = $"http://localhost:{Config.Port}/api/events/headless/{endpoint}";
                         await client.PostAsync(url, null);
                     }
                     catch
@@ -797,7 +1080,7 @@ public partial class MainWindow : Window
                 try
                 {
                     using var client = new HttpClient();
-                    var url = $"{BaseUrl}/notify/spt/offline";
+                    var url = $"{BaseUrl}/api/events/spt/offline";
                     await client.PostAsync(url, null);
                 }
                 catch
@@ -894,7 +1177,7 @@ public partial class MainWindow : Window
             try
             {
                 using var client = new HttpClient();
-                var url = $"{BaseUrl}/notify/headless/offline";
+                var url = $"{BaseUrl}/api/events/headless/offline";
                 await client.PostAsync(url, null);
             }
             catch
@@ -1046,17 +1329,19 @@ public partial class MainWindow : Window
 
     private void RefreshAdminListView()
     {
-        // Check if admin config file exists
-        if (!File.Exists(_adminConfigPath))
+        if (string.IsNullOrWhiteSpace(_databasePath))
         {
             return;
         }
 
-        // Read admin config file
         try
         {
-            var json = File.ReadAllText(_adminConfigPath);
-            var adminList = JsonSerializer.Deserialize<List<AdminConfig>>(json) ?? new List<AdminConfig>();
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigrateLegacyAdminsToDatabase(connection);
+
+            var adminList = LoadAdminsFromDatabase(connection);
             AdminListView.ItemsSource = adminList;
         }
         catch (System.Exception ex)
@@ -1086,26 +1371,21 @@ public partial class MainWindow : Window
                 AllowHeadlessClose = addWindow.AllowHeadlessClose
             };
 
-            // Load existing admins
             try
             {
-                List<AdminConfig> adminList;
-                if (File.Exists(_adminConfigPath))
+                if (string.IsNullOrWhiteSpace(_databasePath))
                 {
-                    var json = File.ReadAllText(_adminConfigPath);
-                    adminList = JsonSerializer.Deserialize<List<AdminConfig>>(json) ?? new List<AdminConfig>();
-                }
-                else
-                {
-                    adminList = new List<AdminConfig>();
+                    MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
                 }
 
-                // Add new admin
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+                EnsureSptCoffeeSchema(connection);
+
+                var adminList = LoadAdminsFromDatabase(connection);
                 adminList.Add(newAdmin);
-
-                // Save updated admin list
-                var updatedJson = JsonSerializer.Serialize(adminList, new JsonSerializerOptions { WriteIndented = true });
-                if (_adminConfigPath != null) File.WriteAllText(_adminConfigPath, updatedJson);
+                SaveAdminsToDatabase(connection, adminList);
             }
             catch (System.Exception ex)
             {
@@ -1145,12 +1425,32 @@ public partial class MainWindow : Window
             selectedAdmin.IsEnabled = editWindow.IsAdminEnabled;
             selectedAdmin.AllowHeadlessClose = editWindow.AllowHeadlessClose;
 
-            // Save updated admin list
             try
             {
-                var adminList = AdminListView.ItemsSource as List<AdminConfig> ?? new List<AdminConfig>();
-                var json = JsonSerializer.Serialize(adminList, new JsonSerializerOptions { WriteIndented = true });
-                if (_adminConfigPath != null) File.WriteAllText(_adminConfigPath, json);
+                if (string.IsNullOrWhiteSpace(_databasePath))
+                {
+                    MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+                EnsureSptCoffeeSchema(connection);
+
+                var adminList = LoadAdminsFromDatabase(connection);
+                var existing = adminList.FirstOrDefault(a => a.Secret == selectedAdmin.Secret);
+                if (existing == null)
+                {
+                    MessageBox.Show("Selected admin was not found in database.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                existing.Note = selectedAdmin.Note;
+                existing.Secret = selectedAdmin.Secret;
+                existing.IsEnabled = selectedAdmin.IsEnabled;
+                existing.AllowHeadlessClose = selectedAdmin.AllowHeadlessClose;
+
+                SaveAdminsToDatabase(connection, adminList);
             }
             catch (System.Exception ex)
             {
@@ -1182,28 +1482,23 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Load existing admins
         try
         {
-            if (File.Exists(_adminConfigPath))
+            if (string.IsNullOrWhiteSpace(_databasePath))
             {
-                var json = File.ReadAllText(_adminConfigPath);
-                var adminList = JsonSerializer.Deserialize<List<AdminConfig>>(json) ?? new List<AdminConfig>();
-
-                // Remove selected admin
-                adminList.RemoveAll(a => a.Secret == selectedAdmin.Secret);
-
-                // Save updated admin list or delete file if empty
-                if (adminList.Count == 0)
-                {
-                    File.Delete(_adminConfigPath);
-                }
-                else
-                {
-                    var updatedJson = JsonSerializer.Serialize(adminList, new JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText(_adminConfigPath, updatedJson);
-                }
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
             }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            var adminList = LoadAdminsFromDatabase(connection);
+            adminList.RemoveAll(a => a.Secret == selectedAdmin.Secret);
+            SaveAdminsToDatabase(connection, adminList);
+
+            RefreshAdminListView();
         }
         catch (System.Exception ex)
         {
@@ -1219,6 +1514,12 @@ public class ServerConfig
     public int Port { get; set; } = 25569;
     public string SptServerFolder { get; set; } = @"C:\SPT";
     public string AdditionalModsPath { get; set; } = "";
+}
+
+public class BootstrapConfig
+{
+    public int Port { get; set; } = 25569;
+    public string DatabaseFileName { get; set; } = "MainDatabase\\SPTCoffee.db";
 }
 
 public class ConfigInfo
