@@ -12,7 +12,7 @@ using System.Text.Json;
 
 public class UpdaterService
 {
-    private const string UpdateJsonUrl = "https://raw.githubusercontent.com/veskeli/SPTCoffeeModManager/main/latest.json";
+    private const string UpdateJsonUrl = "https://raw.githubusercontent.com/veskeli/SPTCoffeeModSuite/master/src/SPTCoffeeModManager/latest.json";
 
     public static async Task CheckAndUpdateAsync(Action<string> updateStatus)
     {
