@@ -102,10 +102,7 @@
 
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
                             <TextBlock Text="Profile:" Foreground="{DynamicResource BrushTextPrimary}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <ComboBox Name="ModProfileComboBox" Width="130" SelectedIndex="0">
-                                <ComboBoxItem Content="Server" />
-                                <ComboBoxItem Content="Custom" />
-                            </ComboBox>
+                            <ComboBox Name="ModProfileComboBox" Width="130" DisplayMemberPath="Name" />
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,10">

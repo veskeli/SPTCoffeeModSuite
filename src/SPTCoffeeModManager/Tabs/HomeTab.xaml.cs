@@ -3,6 +3,7 @@ using System.Windows;
 using System.ComponentModel;
 using System.Windows.Media;
 using SPTCoffee.Contracts.Models;
+using SPTCoffeeModManager.Models;
 
 namespace SPTCoffeeModManager.Tabs;
 
@@ -28,7 +29,23 @@ public partial class HomeTab : UserControl
     public Button RefreshButtonRef => RefreshButton;
     public Button CheckUpdatesButtonRef => CheckUpdatesButton;
     public Button LaunchOrUpdateButtonRef => LaunchOrUpdateButton;
+    public Button NewProfileButtonRef => NewProfileButton;
+    public Button ManageProfileButtonRef => ManageProfileButton;
+    public ComboBox ModProfileComboBoxRef => ModProfileComboBox;
     public Border AdminPanelRef => AdminPanel;
+
+    public void SetProfiles(IEnumerable<ModProfile> profiles, string? selectedName)
+    {
+        var profileList = profiles.ToList();
+        ModProfileComboBox.ItemsSource = profileList;
+        ModProfileComboBox.SelectedItem = profileList.FirstOrDefault(p =>
+            string.Equals(p.Name, selectedName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public string? GetSelectedProfileName()
+    {
+        return (ModProfileComboBox.SelectedItem as ModProfile)?.Name;
+    }
 
     // New: encapsulated UI update methods so parent window doesn't directly manipulate internal controls
     public void SetServerStatus(string text, Brush foreground)

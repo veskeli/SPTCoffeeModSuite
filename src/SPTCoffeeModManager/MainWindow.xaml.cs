@@ -8,6 +8,8 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using System.Windows.Interop;
 using SPTCoffee.Contracts.Models;
+using SPTCoffeeModManager.Models;
+using SPTCoffeeModManager.Services;
 
 namespace SPTCoffeeModManager;
 
@@ -32,6 +34,10 @@ public partial class MainWindow
 
     // store exe directory and config path
     private readonly string? _configPath;
+    private readonly ModProfileRepository _modProfileRepository = null!;
+    private readonly ModProfileFileService _modProfileFileService = null!;
+    private ModProfileStore _modProfileStore = new();
+    private bool _isUpdatingProfileSelection;
 
     // SignalR connection is now managed by Services.SignalRService
 
@@ -64,6 +70,9 @@ public partial class MainWindow
             _configPath = Path.Combine(exeDir, "coffee_manager_server_config.json");
 
             _basePath = exeDir;
+
+            _modProfileRepository = new ModProfileRepository(_basePath);
+            _modProfileFileService = new ModProfileFileService(_basePath, _excludedMods, _excludedModFolders, _excludedConfigs);
         }
         catch
         {
@@ -72,6 +81,9 @@ public partial class MainWindow
                 Close();
                 return;
             }
+
+            _modProfileRepository = new ModProfileRepository(AppDomain.CurrentDomain.BaseDirectory);
+            _modProfileFileService = new ModProfileFileService(AppDomain.CurrentDomain.BaseDirectory, _excludedMods, _excludedModFolders, _excludedConfigs);
         }
 
         InitializeComponent();
@@ -91,6 +103,9 @@ public partial class MainWindow
             HomeTabContent.CheckUpdatesButtonRef.Click += CheckUpdates_Click;
             HomeTabContent.LaunchOrUpdateButtonRef.Click += LaunchOrUpdate_Click;
             HomeTabContent.KillHeadlessButtonRef.Click += KillServer_Click;
+            HomeTabContent.NewProfileButtonRef.Click += NewProfileButton_Click;
+            HomeTabContent.ManageProfileButtonRef.Click += ManageProfileButton_Click;
+            HomeTabContent.ModProfileComboBoxRef.SelectionChanged += ModProfileComboBox_SelectionChanged;
         }
         if (ModsTabContent != null)
         {
@@ -101,6 +116,7 @@ public partial class MainWindow
 
         // Load saved server config if present
         LoadConfig();
+        InitializeModProfiles();
 
         Loaded += async (_, _) =>
         {
@@ -127,6 +143,13 @@ public partial class MainWindow
 
             // Fetch launcher settings
             await FetchLauncherSettings();
+            _modProfileFileService.UpdateExclusions(_excludedMods, _excludedModFolders, _excludedConfigs);
+            RefreshProfileModCounts();
+
+            // Smart profile initialization: check for mismatched mods on first run
+            await HandleFirstRunProfileInitialization();
+
+            UpdateHomeProfileSelector();
 
             // Initialize server status check timer
             InitializeServerCheckTimer();
@@ -137,6 +160,177 @@ public partial class MainWindow
             // Start server notifier (may set status to Offline if unreachable)
             await InitializeSignalR();
         };
+    }
+
+    private void InitializeModProfiles()
+    {
+        _modProfileStore = _modProfileRepository.EnsureInitialized();
+        RefreshProfileModCounts();
+        UpdateHomeProfileSelector();
+    }
+
+    private async Task HandleFirstRunProfileInitialization()
+    {
+        if (_modProfileStore.Profiles.Count > 1 || !string.Equals(_modProfileStore.Profiles[0].Name, "Default", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var serverMods = await GetServerModsAsync();
+        var localMods = GetLocalMods();
+
+        if (localMods.Count == 0)
+        {
+            return;
+        }
+
+        var serverModNames = new HashSet<string>(serverMods.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
+        var mismatchedMods = localMods.Where(m => !serverModNames.Contains(m.Name)).ToList();
+
+        if (mismatchedMods.Count >= 2)
+        {
+            var result = MessageBox.Show(
+                $"No profiles found but mods don't match server. Do you want to make a profile from these mods?\n\n" +
+                $"Local mods not on server: {mismatchedMods.Count}\n\n" +
+                $"Press yes if you currently have mods that you play locally or on another server.",
+                "Create Custom Profile?",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                var customProfile = new ModProfile
+                {
+                    Name = "Local",
+                    IsServerProfile = false,
+                    IsActive = false,
+                    IsProtected = false
+                };
+
+                var storeForSwitch = _modProfileRepository.LoadStore();
+                storeForSwitch.Profiles.Add(customProfile);
+                _modProfileRepository.SaveStore(storeForSwitch);
+
+                try
+                {
+                    _modProfileFileService.ActivateProfile(storeForSwitch, customProfile.Name);
+                    _modProfileRepository.SaveStore(storeForSwitch);
+                    _modProfileStore = storeForSwitch;
+                    RefreshProfileModCounts();
+                    UpdateHomeProfileSelector();
+
+                    MessageBox.Show(
+                        "Custom 'Local' profile created and activated.\n\nYour current mods are now stored in the 'Local' profile.\n\n" +
+                        "You can use the 'Default' profile for server-matched mods.",
+                        "Profile Created",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to create custom profile: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+    }
+
+    private void RefreshProfileModCounts()
+    {
+        foreach (var profile in _modProfileStore.Profiles)
+        {
+            profile.ModCount = _modProfileFileService.CountMods(profile);
+        }
+    }
+
+    private void UpdateHomeProfileSelector()
+    {
+        if (HomeTabContent == null)
+        {
+            return;
+        }
+
+        _isUpdatingProfileSelection = true;
+        HomeTabContent.SetProfiles(_modProfileStore.Profiles, _modProfileStore.ActiveProfileName);
+        _isUpdatingProfileSelection = false;
+    }
+
+    private void NewProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenProfileManager(createNewOnOpen: true);
+    }
+
+    private void ManageProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenProfileManager(createNewOnOpen: false);
+    }
+
+    private void OpenProfileManager(bool createNewOnOpen)
+    {
+        var profileWindow = new ModProfileManagerWindow(_modProfileRepository, _modProfileFileService, createNewOnOpen)
+        {
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+
+        profileWindow.ShowDialog();
+
+        _modProfileStore = _modProfileRepository.EnsureInitialized();
+        RefreshProfileModCounts();
+        UpdateHomeProfileSelector();
+    }
+
+    private async void ModProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isUpdatingProfileSelection)
+        {
+            return;
+        }
+
+        var selectedProfileName = HomeTabContent.GetSelectedProfileName();
+        if (string.IsNullOrWhiteSpace(selectedProfileName) ||
+            string.Equals(selectedProfileName, _modProfileStore.ActiveProfileName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"Switch active profile to '{selectedProfileName}'?\n\nThis will move active mods and configs into profile storage.",
+            "Switch Profile",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+
+        if (confirm != MessageBoxResult.Yes)
+        {
+            UpdateHomeProfileSelector();
+            return;
+        }
+
+        HomeTabContent.ModProfileComboBoxRef.IsEnabled = false;
+        HomeTabContent.SetStatusMessage("Switching profile...");
+
+        try
+        {
+            await Task.Run(() => _modProfileFileService.ActivateProfile(_modProfileStore, selectedProfileName));
+            _modProfileRepository.SaveStore(_modProfileStore);
+            RefreshProfileModCounts();
+            UpdateHomeProfileSelector();
+            await RefreshPluginConfigs();
+            await RefreshMods();
+            HomeTabContent.SetStatusMessage($"Active profile: {selectedProfileName}");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to switch profile: {ex.Message}", "Profile Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            _modProfileStore = _modProfileRepository.EnsureInitialized();
+            RefreshProfileModCounts();
+            UpdateHomeProfileSelector();
+        }
+        finally
+        {
+            HomeTabContent.ModProfileComboBoxRef.IsEnabled = true;
+        }
     }
 
     private static bool ConfirmContinueWithoutSptRoot()
