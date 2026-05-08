@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Threading;
 using System.Windows.Interop;
 using SPTCoffee.Contracts.Models;
@@ -74,6 +75,7 @@ public partial class MainWindow
         }
 
         InitializeComponent();
+        SetActiveTabButton(HomeTabButton);
 
         // Apply Windows 11 rounded corners if available
         SourceInitialized += (_, _) =>
@@ -1283,15 +1285,7 @@ public partial class MainWindow
         ModsTabContent.Visibility = Visibility.Collapsed;
         SettingsTabContent.Visibility = Visibility.Collapsed;
 
-        // Update button styling
-        HomeTabButton.Background = GetBrush("BrushAccent");
-        HomeTabButton.FontWeight = FontWeights.Bold;
-
-        ModsTabButton.Background = GetBrush("BrushSurface1");
-        ModsTabButton.FontWeight = FontWeights.Normal;
-
-        SettingsTabButton.Background = GetBrush("BrushSurface1");
-        SettingsTabButton.FontWeight = FontWeights.Normal;
+        SetActiveTabButton(HomeTabButton);
     }
 
     /// <summary>
@@ -1304,15 +1298,7 @@ public partial class MainWindow
         ModsTabContent.Visibility = Visibility.Visible;
         SettingsTabContent.Visibility = Visibility.Collapsed;
 
-        // Update button styling
-        HomeTabButton.Background = GetBrush("BrushSurface1");
-        HomeTabButton.FontWeight = FontWeights.Normal;
-
-        ModsTabButton.Background = GetBrush("BrushAccent");
-        ModsTabButton.FontWeight = FontWeights.Bold;
-
-        SettingsTabButton.Background = GetBrush("BrushSurface1");
-        SettingsTabButton.FontWeight = FontWeights.Normal;
+        SetActiveTabButton(ModsTabButton);
     }
 
     /// <summary>
@@ -1325,21 +1311,15 @@ public partial class MainWindow
         ModsTabContent.Visibility = Visibility.Collapsed;
         SettingsTabContent.Visibility = Visibility.Visible;
 
-        // Update button styling
-        HomeTabButton.Background = GetBrush("BrushSurface1");
-        HomeTabButton.FontWeight = FontWeights.Normal;
-
-        ModsTabButton.Background = GetBrush("BrushSurface1");
-        ModsTabButton.FontWeight = FontWeights.Normal;
-
-        SettingsTabButton.Background = GetBrush("BrushAccent");
-        SettingsTabButton.FontWeight = FontWeights.Bold;
+        SetActiveTabButton(SettingsTabButton);
     }
 
-    private static System.Windows.Media.Brush GetBrush(string key)
+    private void SetActiveTabButton(Button activeButton)
     {
-        return Application.Current.Resources[key] as System.Windows.Media.Brush
-               ?? System.Windows.Media.Brushes.Transparent;
+        HomeTabButton.Tag = null;
+        ModsTabButton.Tag = null;
+        SettingsTabButton.Tag = null;
+        activeButton.Tag = "Active";
     }
 
     // Expose server config getters/setters so SettingsTab can call them

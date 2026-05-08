@@ -36,7 +36,7 @@
             <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                 <TextBlock Text="Mod Status" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,0,8,6" VerticalAlignment="Center" />
                 <Button Name="CheckUpdatesButton" Content="Check for mod updates" Width="150" Height="24" Margin="0,0,0,6"
-                        Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                        Style="{StaticResource ButtonSecondaryStyle}" />
             </StackPanel>
 
             <TextBlock Grid.Column="1" Text="Mod profile" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="12,0,0,6" VerticalAlignment="Center" />
@@ -109,8 +109,8 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <Button Name="NewProfileButton" Content="New" Padding="12,4,12,4" Margin="0,0,8,0" Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
-                            <Button Name="ManageProfileButton" Content="Manage" Padding="12,4,12,4" Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                            <Button Name="NewProfileButton" Content="New" Padding="12,4,12,4" Margin="0,0,8,0" Style="{StaticResource ButtonSecondaryStyle}" />
+                            <Button Name="ManageProfileButton" Content="Manage" Padding="12,4,12,4" Style="{StaticResource ButtonSecondaryStyle}" />
                         </StackPanel>
 
                     </StackPanel>
@@ -120,7 +120,7 @@
                 <Border Name="AdminPanel" Visibility="Collapsed" d:Visibility="Visible" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <Button Name="KillHeadlessButton" Content="Kill Headless" Padding="16,4,16,4" Margin="0,0,10,0" Background="{DynamicResource BrushDanger}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                            <Button Name="KillHeadlessButton" Content="Kill Headless" Padding="16,4,16,4" Margin="0,0,10,0" Style="{StaticResource ButtonDangerStyle}" />
                         </StackPanel>
                     </StackPanel>
                 </Border>
@@ -144,7 +144,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
                     <TextBlock Text="Quick Status" Foreground="{DynamicResource BrushTextPrimary}" FontWeight="Bold" FontSize="12" Margin="0,0,8,0" />
                     <Button Name="RefreshButton" Content="Check for server status" Height="24" Margin="0,0,0,0" Padding="8,0"
-                            Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                            Style="{StaticResource ButtonSecondaryStyle}" />
                 </StackPanel>
 
                 <!-- Rounded container: Border provides CornerRadius -->
@@ -197,7 +197,8 @@
 
             <!-- Play button anchored to bottom-right in column 1 -->
             <Button Grid.Column="1" Name="LaunchOrUpdateButton" Content="Play" Width="120" Height="40" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                    Background="{DynamicResource BrushAccentAlt}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                    IsEnabled="False"
+                    Style="{StaticResource ButtonAccentAltStyle}" />
         </Grid>
 
     </Grid>

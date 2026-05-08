@@ -69,6 +69,25 @@ public partial class HomeTab : UserControl
     public void SetLaunchOrUpdateButtonContent(string content)
     {
         LaunchOrUpdateButton.Content = content;
+
+        // Keep visual state in sync with the content state.
+        if (string.Equals(content, "Launch", StringComparison.OrdinalIgnoreCase))
+        {
+            LaunchOrUpdateButton.Background = GetThemeBrush("BrushSuccess", System.Windows.Media.Brushes.SeaGreen);
+            LaunchOrUpdateButton.BorderBrush = GetThemeBrush("BrushSuccessAlt", System.Windows.Media.Brushes.MediumSeaGreen);
+            return;
+        }
+
+        if (string.Equals(content, "Update", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(content, "Update SPT", StringComparison.OrdinalIgnoreCase))
+        {
+            LaunchOrUpdateButton.Background = GetThemeBrush("BrushWarning", System.Windows.Media.Brushes.DarkOrange);
+            LaunchOrUpdateButton.BorderBrush = GetThemeBrush("BrushWarningAlt", System.Windows.Media.Brushes.Orange);
+            return;
+        }
+
+        LaunchOrUpdateButton.Background = GetThemeBrush("BrushAccentAlt", System.Windows.Media.Brushes.Gray);
+        LaunchOrUpdateButton.BorderBrush = GetThemeBrush("BrushBorder", System.Windows.Media.Brushes.DimGray);
     }
 
     public string GetLaunchOrUpdateButtonContent()
@@ -99,6 +118,11 @@ public partial class HomeTab : UserControl
     public bool IsServerOnline()
     {
         return string.Equals(ServerStatusText.Text, "Online", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Brush GetThemeBrush(string key, Brush fallback)
+    {
+        return Application.Current.Resources[key] as Brush ?? fallback;
     }
 
     // Move admin UI update logic into the tab

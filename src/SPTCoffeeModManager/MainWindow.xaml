@@ -10,6 +10,77 @@
         ResizeMode="NoResize"
         Background="{DynamicResource BrushAppBackground}" Foreground="{DynamicResource BrushTextPrimary}"
         WindowStyle="None">
+    <Window.Resources>
+        <Style x:Key="TabNavButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="10,4,10,4" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Border x:Name="ActiveIndicator"
+                                        Width="3"
+                                        HorizontalAlignment="Left"
+                                        Margin="3,6,0,6"
+                                        CornerRadius="2"
+                                        Background="{DynamicResource SecondaryBrushAccent}"
+                                        Opacity="0" />
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                  Margin="{TemplateBinding Padding}" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                    <Condition Property="Tag" Value="{x:Null}" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RootBorder" Property="Background" Value="{DynamicResource BrushSurface2}" />
+                                <Setter TargetName="RootBorder" Property="BorderBrush" Value="{DynamicResource BrushSurface3}" />
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsPressed" Value="True" />
+                                    <Condition Property="Tag" Value="{x:Null}" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RootBorder" Property="Background" Value="{DynamicResource BrushSurface3}" />
+                                <Setter TargetName="RootBorder" Property="BorderBrush" Value="{DynamicResource BrushSurface4}" />
+                            </MultiTrigger>
+                            <Trigger Property="Tag" Value="Active">
+                                <Setter TargetName="RootBorder" Property="Background" Value="{DynamicResource BrushSurface1}" />
+                                <Setter TargetName="RootBorder" Property="BorderBrush" Value="Transparent" />
+                                <Setter TargetName="ActiveIndicator" Property="Opacity" Value="1" />
+                                <Setter Property="FontWeight" Value="Bold" />
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Active" />
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RootBorder" Property="Background" Value="{DynamicResource BrushSurface2}" />
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Active" />
+                                    <Condition Property="IsPressed" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="RootBorder" Property="Background" Value="{DynamicResource BrushSurface3}" />
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <Grid Margin="0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -38,16 +109,12 @@
                        HorizontalAlignment="Center"/>
 
                 <Button Name="HomeTabButton"
+                        Style="{StaticResource TabNavButtonStyle}"
+                        Tag="Active"
                         Height="40"
                         Width="Auto"
-                        HorizontalAlignment="Left"
-                        Background="{DynamicResource BrushAccent}"
-                        BorderThickness="0"
                         Click="HomeTab_Click"
-                        Cursor="Hand"
-                        Margin="10,5,10,5"
-                        HorizontalContentAlignment="Left"
-                        Padding="10,4,10,4">
+                        Margin="10,5,10,5">
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
 
@@ -69,16 +136,11 @@
                     </StackPanel>
                 </Button>
                 <Button Name="ModsTabButton"
+                        Style="{StaticResource TabNavButtonStyle}"
                         Height="40"
                         Width="Auto"
-                        HorizontalAlignment="Left"
-                        Background="{DynamicResource BrushSurface1}"
-                        BorderThickness="0"
                         Click="ModsTab_Click"
-                        Cursor="Hand"
-                        Margin="10,5,10,5"
-                        HorizontalContentAlignment="Left"
-                        Padding="10,4,10,4">
+                        Margin="10,5,10,5">
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
 
@@ -98,15 +160,11 @@
                     </StackPanel>
                 </Button>
                 <Button Name="SettingsTabButton"
+                        Style="{StaticResource TabNavButtonStyle}"
                         Height="40"
                         Width="Auto"
-                        HorizontalAlignment="Left"
-                        Background="{DynamicResource BrushSurface1}"
-                        BorderThickness="0"
-                        Click="SettingsTab_Click" Cursor="Hand"
-                        Margin="10,5,10,5"
-                        HorizontalContentAlignment="Left"
-                        Padding="10,4,10,4">
+                        Click="SettingsTab_Click"
+                        Margin="10,5,10,5">
 
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
 

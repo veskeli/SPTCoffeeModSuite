@@ -59,9 +59,7 @@
                             Width="110"
                             Height="34"
                             Margin="0,0,8,0"
-                            Background="{DynamicResource BrushAccent}"
-                            Foreground="{DynamicResource BrushTextPrimary}"
-                            BorderBrush="{DynamicResource BrushBorder}" />
+                            Style="{StaticResource ButtonAccentStyle}" />
 
                 </StackPanel>
 

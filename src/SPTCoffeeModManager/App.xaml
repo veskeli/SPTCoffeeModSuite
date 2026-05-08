@@ -14,6 +14,7 @@
                 <Setter Property="Background" Value="{DynamicResource BrushSurface1}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}" />
                 <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Cursor" Value="Hand"/>
                 <Setter Property="FontFamily" Value="Segoe UI"/>
                 <Setter Property="FontSize" Value="13"/>
                 <Setter Property="Padding" Value="5,2"/>
@@ -42,10 +43,66 @@
                 </Style.Triggers>
             </Style>
 
+            <Style x:Key="ButtonAccentStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="{DynamicResource BrushAccent}" />
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentHover}" />
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentPressed}" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style x:Key="ButtonSecondaryStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="{DynamicResource SecondaryBrushAccent}" />
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource SecondaryBrushAccentAlt}" />
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccentHover}" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style x:Key="ButtonAccentAltStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="{DynamicResource BrushAccentAlt}" />
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource SecondaryBrushAccent}" />
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushAccent}" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Background" Value="{DynamicResource BrushSurface2}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource BrushSurface3}" />
+                        <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+                        <Setter Property="Opacity" Value="1" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style x:Key="ButtonDangerStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Setter Property="Background" Value="{DynamicResource BrushDanger}" />
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushDangerAlt}" />
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource BrushDanger}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource BrushDangerAlt}" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
             <!-- Dark ComboBox Style -->
             <Style TargetType="ComboBoxItem">
                 <Setter Property="Background" Value="{DynamicResource BrushSurface1}" />
                 <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}" />
+                <Setter Property="Cursor" Value="Hand" />
                 <Setter Property="BorderBrush" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="Padding" Value="6,2" />
@@ -91,6 +148,7 @@
                 <Setter Property="Background" Value="{DynamicResource BrushSurface1}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}" />
                 <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Cursor" Value="Hand" />
                 <Setter Property="Padding" Value="6,2" />
                 <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                 <Setter Property="Template">
@@ -104,6 +162,7 @@
                                         CornerRadius="4" />
                                 <ToggleButton Background="Transparent"
                                               BorderThickness="0"
+                                              Cursor="Hand"
                                               Focusable="False"
                                               FocusVisualStyle="{x:Null}"
                                               IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
