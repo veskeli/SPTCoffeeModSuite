@@ -88,6 +88,7 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
     public string SelectedProfileConfigsText => SelectedProfile == null ? "Configs: -" : $"Configs: {SelectedProfile.ConfigCount}";
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    public event Action? ProfilesChanged;
 
     private void NewProfileButton_Click(object sender, RoutedEventArgs e)
     {
@@ -294,6 +295,7 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
 
         OnPropertyChanged(nameof(SelectedProfileModsText));
         OnPropertyChanged(nameof(SelectedProfileConfigsText));
+        ProfilesChanged?.Invoke();
     }
 
     private ModProfileStore BuildStoreFromUi()

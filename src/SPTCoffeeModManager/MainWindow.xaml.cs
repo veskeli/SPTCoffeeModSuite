@@ -36,6 +36,7 @@ public partial class MainWindow
     private readonly string? _configPath;
     private readonly ModProfileRepository _modProfileRepository = null!;
     private readonly ModProfileFileService _modProfileFileService = null!;
+    private readonly bool _profilesStoreExistedAtStartup;
     private ModProfileStore _modProfileStore = new();
     private bool _isUpdatingProfileSelection;
 
@@ -85,6 +86,8 @@ public partial class MainWindow
             _modProfileRepository = new ModProfileRepository(AppDomain.CurrentDomain.BaseDirectory);
             _modProfileFileService = new ModProfileFileService(AppDomain.CurrentDomain.BaseDirectory, _excludedMods, _excludedModFolders, _excludedConfigs);
         }
+
+        _profilesStoreExistedAtStartup = File.Exists(Path.Combine(_modProfileRepository.ProfilesRoot, "profiles.json"));
 
         InitializeComponent();
         SetActiveTabButton(HomeTabButton);
@@ -171,6 +174,17 @@ public partial class MainWindow
 
     private async Task HandleFirstRunProfileInitialization()
     {
+        if (_profilesStoreExistedAtStartup)
+        {
+            return;
+        }
+
+        var serverIsReachable = await IsServerReachableAsync();
+        if (!serverIsReachable)
+        {
+            return;
+        }
+
         if (_modProfileStore.Profiles.Count > 1 || !string.Equals(_modProfileStore.Profiles[0].Name, "Default", StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -185,13 +199,31 @@ public partial class MainWindow
         }
 
         var serverModNames = new HashSet<string>(serverMods.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
-        var mismatchedMods = localMods.Where(m => !serverModNames.Contains(m.Name)).ToList();
+        var localModNames = new HashSet<string>(localMods.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
 
-        if (mismatchedMods.Count >= 2)
+        var localNotOnServer = localMods.Where(m => !serverModNames.Contains(m.Name)).ToList();
+        var serverNotOnLocal = serverMods.Where(m => !localModNames.Contains(m.Name)).ToList();
+
+        var fikaIsOnlyLocalMod =
+            localMods.Count == 1 &&
+            string.Equals(localMods[0].Name, "Fika", StringComparison.OrdinalIgnoreCase);
+
+        if (fikaIsOnlyLocalMod)
+        {
+            return;
+        }
+
+        var shouldPromptForLocalProfile =
+            localNotOnServer.Count >= 2 ||
+            serverNotOnLocal.Count >= 2 ||
+            (localNotOnServer.Count >= 1 && serverNotOnLocal.Count >= 1);
+
+        if (shouldPromptForLocalProfile)
         {
             var result = MessageBox.Show(
                 $"No profiles found but mods don't match server. Do you want to make a profile from these mods?\n\n" +
-                $"Local mods not on server: {mismatchedMods.Count}\n\n" +
+                $"Local mods not on server: {localNotOnServer.Count}\n" +
+                $"Server mods not on client: {serverNotOnLocal.Count}\n\n" +
                 $"Press yes if you currently have mods that you play locally or on another server.",
                 "Create Custom Profile?",
                 MessageBoxButton.YesNo,
@@ -214,11 +246,20 @@ public partial class MainWindow
 
                 try
                 {
-                    _modProfileFileService.ActivateProfile(storeForSwitch, customProfile.Name);
+                    _modProfileFileService.DuplicateProfileStorage("Default", customProfile.Name, isSourceActive: true);
+
+                    foreach (var profile in storeForSwitch.Profiles)
+                    {
+                        profile.IsActive = string.Equals(profile.Name, customProfile.Name, StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    storeForSwitch.ActiveProfileName = customProfile.Name;
                     _modProfileRepository.SaveStore(storeForSwitch);
                     _modProfileStore = storeForSwitch;
                     RefreshProfileModCounts();
                     UpdateHomeProfileSelector();
+                    await RefreshPluginConfigs();
+                    await RefreshMods();
 
                     MessageBox.Show(
                         "Custom 'Local' profile created and activated.\n\nYour current mods are now stored in the 'Local' profile.\n\n" +
@@ -235,12 +276,35 @@ public partial class MainWindow
         }
     }
 
+    private async Task<bool> IsServerReachableAsync()
+    {
+        try
+        {
+            var response = await SharedHttpClient.GetAsync($"{BaseUrl}/api/status/spt-server");
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void RefreshProfileModCounts()
     {
         foreach (var profile in _modProfileStore.Profiles)
         {
             profile.ModCount = _modProfileFileService.CountMods(profile);
         }
+    }
+
+    private ModProfile? GetActiveProfile()
+    {
+        return _modProfileStore.Profiles.FirstOrDefault(p => p.IsActive);
+    }
+
+    private bool IsServerProfileActive()
+    {
+        return GetActiveProfile()?.IsServerProfile ?? true;
     }
 
     private void UpdateHomeProfileSelector()
@@ -252,6 +316,20 @@ public partial class MainWindow
 
         _isUpdatingProfileSelection = true;
         HomeTabContent.SetProfiles(_modProfileStore.Profiles, _modProfileStore.ActiveProfileName);
+
+        var activeProfile = _modProfileStore.Profiles.FirstOrDefault(p => p.IsActive);
+        if (activeProfile != null)
+        {
+            HomeTabContent.SetModListVisibility(activeProfile.IsServerProfile);
+            HomeTabContent.CheckUpdatesButtonRef.IsEnabled = activeProfile.IsServerProfile;
+
+            if (!activeProfile.IsServerProfile)
+            {
+                HomeTabContent.SetLaunchOrUpdateButtonContent("Launch");
+                HomeTabContent.SetLaunchOrUpdateButtonEnabled(true);
+            }
+        }
+
         _isUpdatingProfileSelection = false;
     }
 
@@ -273,11 +351,24 @@ public partial class MainWindow
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
 
+        profileWindow.ProfilesChanged += OnProfilesChangedFromManager;
+
         profileWindow.ShowDialog();
+
+        profileWindow.ProfilesChanged -= OnProfilesChangedFromManager;
 
         _modProfileStore = _modProfileRepository.EnsureInitialized();
         RefreshProfileModCounts();
         UpdateHomeProfileSelector();
+    }
+
+    private async void OnProfilesChangedFromManager()
+    {
+        _modProfileStore = _modProfileRepository.EnsureInitialized();
+        RefreshProfileModCounts();
+        UpdateHomeProfileSelector();
+        await RefreshPluginConfigs();
+        await RefreshMods();
     }
 
     private async void ModProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -316,9 +407,15 @@ public partial class MainWindow
             _modProfileRepository.SaveStore(_modProfileStore);
             RefreshProfileModCounts();
             UpdateHomeProfileSelector();
+
             await RefreshPluginConfigs();
             await RefreshMods();
-            HomeTabContent.SetStatusMessage($"Active profile: {selectedProfileName}");
+
+            var activeProfile = _modProfileStore.Profiles.FirstOrDefault(p => p.IsActive);
+            if (activeProfile != null)
+            {
+                HomeTabContent.SetStatusMessage($"Active profile: {selectedProfileName} {(activeProfile.IsServerProfile ? "(Server)" : "(Local)")}");
+            }
         }
         catch (Exception ex)
         {
@@ -533,6 +630,14 @@ public partial class MainWindow
             // Local version found — show local version immediately in gray until server confirms state
             HomeTabContent.SetCurrentSptVersion(localVersionText, System.Windows.Media.Brushes.Gray);
 
+            // Local profiles ignore server-side update enforcement.
+            if (!IsServerProfileActive())
+            {
+                HomeTabContent.SetLaunchOrUpdateButtonContent("Launch");
+                HomeTabContent.SetLaunchOrUpdateButtonEnabled(true);
+                return;
+            }
+
             // --- Server comparison (only attempted if server is already reachable) ---
             try
             {
@@ -693,6 +798,13 @@ public partial class MainWindow
 
     private async Task RefreshMods()
     {
+        if (!IsServerProfileActive())
+        {
+            HomeTabContent.SetLaunchOrUpdateButtonContent("Launch");
+            HomeTabContent.SetLaunchOrUpdateButtonEnabled(true);
+            return;
+        }
+
         HomeTabContent.SetLaunchOrUpdateButtonEnabled(false);
 
         var serverMods = await GetServerModsAsync();
@@ -825,6 +937,12 @@ public partial class MainWindow
 
     private async Task RefreshPluginConfigs()
     {
+        if (!IsServerProfileActive())
+        {
+            HomeTabContent.SetSyncStatus("Local profile active", System.Windows.Media.Brushes.Gray);
+            return;
+        }
+
         HomeTabContent.SetSyncStatus("Checking...", System.Windows.Media.Brushes.Gray);
 
         var serverConfigs = await GetServerConfigsAsync();
@@ -856,6 +974,17 @@ public partial class MainWindow
     {
         try
         {
+            if (!IsServerProfileActive())
+            {
+                HomeTabContent.SetLaunchOrUpdateButtonContent("Launch");
+                HomeTabContent.SetLaunchOrUpdateButtonEnabled(true);
+                HomeTabContent.SetStatusMessage("Launching local profile...");
+                LaunchTheGame();
+                await Task.Delay(1500);
+                HomeTabContent.SetStatusMessage("");
+                return;
+            }
+
             // If SPT needs update, open updater window
             if (HomeTabContent.GetLaunchOrUpdateButtonContent() == "Update SPT")
             {
@@ -1212,6 +1341,14 @@ public partial class MainWindow
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
+        if (!IsServerProfileActive())
+        {
+            HomeTabContent.SetStatusMessage("Updates are disabled for local profiles.");
+            await Task.Delay(1500);
+            HomeTabContent.SetStatusMessage("");
+            return;
+        }
+
         HomeTabContent.CheckUpdatesButtonRef.IsEnabled = false;
         HomeTabContent.CheckUpdatesButtonRef.Content = "Checking...";
         try

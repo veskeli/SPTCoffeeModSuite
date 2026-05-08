@@ -50,49 +50,60 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="{DynamicResource BrushSurface1}" HorizontalAlignment="Left" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
-                <ListView Name="ModListView" Background="{DynamicResource BrushAppBackground}" HorizontalAlignment="Left" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}">
-                    <ListView.Resources>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="Background" Value="{DynamicResource BrushAppBackground}" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Status}" Value="Up to date">
-                                    <Setter Property="Background" Value="{DynamicResource BrushAccentAlt}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Update">
-                                    <Setter Property="Background" Value="{DynamicResource BrushWarning}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Not installed">
-                                    <Setter Property="Background" Value="{DynamicResource BrushDanger}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Removed">
-                                    <Setter Property="Background" Value="{DynamicResource BrushDangerAlt}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Downloading...">
-                                    <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Extracting...">
-                                    <Setter Property="Background" Value="{DynamicResource BrushInfoAlt}" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Status}" Value="Installing...">
-                                    <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                        <Style TargetType="GridViewColumnHeader">
-                            <Setter Property="Background" Value="{DynamicResource BrushSurface1}"/>
-                            <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}"/>
-                            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
-                        </Style>
-                    </ListView.Resources>
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="Mod Name" Width="280" DisplayMemberBinding="{Binding Name}" />
-                            <GridViewColumn Header="Local Version" Width="100" DisplayMemberBinding="{Binding LocalVersion}" />
-                            <GridViewColumn Header="Server Version" Width="100" DisplayMemberBinding="{Binding ServerVersion}" />
-                            <GridViewColumn Header="Status" Width="90" DisplayMemberBinding="{Binding Status}" />
-                        </GridView>
-                    </ListView.View>
-                </ListView>
+                <Grid>
+                    <ListView Name="ModListView" Background="{DynamicResource BrushAppBackground}" HorizontalAlignment="Left" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}">
+                        <ListView.Resources>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="Background" Value="{DynamicResource BrushAppBackground}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Up to date">
+                                        <Setter Property="Background" Value="{DynamicResource BrushAccentAlt}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Update">
+                                        <Setter Property="Background" Value="{DynamicResource BrushWarning}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Not installed">
+                                        <Setter Property="Background" Value="{DynamicResource BrushDanger}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Removed">
+                                        <Setter Property="Background" Value="{DynamicResource BrushDangerAlt}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Downloading...">
+                                        <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Extracting...">
+                                        <Setter Property="Background" Value="{DynamicResource BrushInfoAlt}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="Installing...">
+                                        <Setter Property="Background" Value="{DynamicResource BrushInfo}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                            <Style TargetType="GridViewColumnHeader">
+                                <Setter Property="Background" Value="{DynamicResource BrushSurface1}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource BrushTextPrimary}"/>
+                                <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                            </Style>
+                        </ListView.Resources>
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Mod Name" Width="280" DisplayMemberBinding="{Binding Name}" />
+                                <GridViewColumn Header="Local Version" Width="100" DisplayMemberBinding="{Binding LocalVersion}" />
+                                <GridViewColumn Header="Server Version" Width="100" DisplayMemberBinding="{Binding ServerVersion}" />
+                                <GridViewColumn Header="Status" Width="90" DisplayMemberBinding="{Binding Status}" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+
+                    <TextBlock Name="LocalProfileMessageText"
+                               Visibility="Collapsed"
+                               Text="Updates not available when using local profile"
+                               Foreground="{DynamicResource BrushTextMuted}"
+                               FontSize="13"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap" />
+                </Grid>
             </Border>
 
             <!-- Admin panel container: header is in the top header row; keep container collapsed at runtime but visible in designer -->

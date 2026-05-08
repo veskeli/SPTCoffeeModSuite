@@ -37,14 +37,33 @@ public partial class HomeTab : UserControl
     public void SetProfiles(IEnumerable<ModProfile> profiles, string? selectedName)
     {
         var profileList = profiles.ToList();
-        ModProfileComboBox.ItemsSource = profileList;
-        ModProfileComboBox.SelectedItem = profileList.FirstOrDefault(p =>
+
+        // Avoid rebinding on every refresh because it can interfere with dropdown interaction.
+        var current = (ModProfileComboBox.ItemsSource as IEnumerable<ModProfile>)?.ToList();
+        var shouldRebind = current == null ||
+                           !current.Select(p => p.Name)
+                               .SequenceEqual(profileList.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+
+        if (shouldRebind)
+        {
+            ModProfileComboBox.ItemsSource = profileList;
+            current = profileList;
+        }
+
+        var sourceForSelection = current ?? profileList;
+        ModProfileComboBox.SelectedItem = sourceForSelection.FirstOrDefault(p =>
             string.Equals(p.Name, selectedName, StringComparison.OrdinalIgnoreCase));
     }
 
     public string? GetSelectedProfileName()
     {
         return (ModProfileComboBox.SelectedItem as ModProfile)?.Name;
+    }
+
+    public void SetModListVisibility(bool isServerProfile)
+    {
+        ModListView.Visibility = isServerProfile ? Visibility.Visible : Visibility.Collapsed;
+        LocalProfileMessageText.Visibility = isServerProfile ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // New: encapsulated UI update methods so parent window doesn't directly manipulate internal controls
