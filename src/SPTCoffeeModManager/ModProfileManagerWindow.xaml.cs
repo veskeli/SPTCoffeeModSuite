@@ -30,6 +30,7 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
         foreach (var profile in Profiles)
         {
             profile.ModCount = _fileService.CountMods(profile);
+            profile.ConfigCount = _fileService.CountConfigs(profile);
             _originalNames[profile] = profile.Name;
         }
 
@@ -74,6 +75,7 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsProfileSelected));
             OnPropertyChanged(nameof(IsDeleteButtonEnabled));
             OnPropertyChanged(nameof(SelectedProfileModsText));
+            OnPropertyChanged(nameof(SelectedProfileConfigsText));
         }
     }
 
@@ -83,11 +85,23 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
 
     public string SelectedProfileModsText => SelectedProfile == null ? "Mods: -" : $"Mods: {SelectedProfile.ModCount}";
 
+    public string SelectedProfileConfigsText => SelectedProfile == null ? "Configs: -" : $"Configs: {SelectedProfile.ConfigCount}";
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void NewProfileButton_Click(object sender, RoutedEventArgs e)
     {
         CreateNewProfile();
+    }
+
+    private void DuplicateProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedProfile == null)
+        {
+            return;
+        }
+
+        DuplicateProfile(SelectedProfile);
     }
 
     private void DeleteProfileButton_Click(object sender, RoutedEventArgs e)
@@ -214,6 +228,46 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
         ProfileNameTextBox.SelectAll();
     }
 
+    private void DuplicateProfile(ModProfile sourceProfile)
+    {
+        var baseName = $"{sourceProfile.Name} Copy";
+        var nextName = baseName;
+        var index = 1;
+
+        while (Profiles.Any(p => string.Equals(p.Name, nextName, StringComparison.OrdinalIgnoreCase)))
+        {
+            index++;
+            nextName = $"{baseName} {index}";
+        }
+
+        var duplicatedProfile = new ModProfile
+        {
+            Name = nextName,
+            IsServerProfile = sourceProfile.IsServerProfile,
+            IsActive = false,
+            ModCount = 0,
+            IsProtected = false
+        };
+
+        try
+        {
+            _fileService.DuplicateProfileStorage(sourceProfile.Name, duplicatedProfile.Name, sourceProfile.IsActive);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to duplicate profile storage: {ex.Message}", "Duplicate Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        Profiles.Add(duplicatedProfile);
+        _originalNames[duplicatedProfile] = duplicatedProfile.Name;
+        SelectedProfile = duplicatedProfile;
+        SaveAll();
+
+        ProfileNameTextBox.Focus();
+        ProfileNameTextBox.SelectAll();
+    }
+
     private void SaveAll()
     {
         var renamedProfiles = Profiles
@@ -234,10 +288,12 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
         foreach (var profile in Profiles)
         {
             profile.ModCount = _fileService.CountMods(profile);
+            profile.ConfigCount = _fileService.CountConfigs(profile);
             _originalNames[profile] = profile.Name;
         }
 
         OnPropertyChanged(nameof(SelectedProfileModsText));
+        OnPropertyChanged(nameof(SelectedProfileConfigsText));
     }
 
     private ModProfileStore BuildStoreFromUi()
@@ -264,9 +320,11 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
 
             profile.IsActive = updated.IsActive;
             profile.ModCount = _fileService.CountMods(profile);
+            profile.ConfigCount = _fileService.CountConfigs(profile);
         }
 
         OnPropertyChanged(nameof(SelectedProfileModsText));
+        OnPropertyChanged(nameof(SelectedProfileConfigsText));
     }
 
     private static void ValidateStore(ModProfileStore store)
@@ -312,9 +370,10 @@ public partial class ModProfileManagerWindow : INotifyPropertyChanged
 
     private void SelectedProfile_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(ModProfile.Name) or nameof(ModProfile.ModCount) or nameof(ModProfile.IsActive))
+        if (e.PropertyName is nameof(ModProfile.Name) or nameof(ModProfile.ModCount) or nameof(ModProfile.ConfigCount) or nameof(ModProfile.IsActive))
         {
             OnPropertyChanged(nameof(SelectedProfileModsText));
+            OnPropertyChanged(nameof(SelectedProfileConfigsText));
         }
     }
 

@@ -107,6 +107,37 @@ public sealed class ModProfileFileService
         return count;
     }
 
+    public int CountConfigs(ModProfile profile)
+    {
+        var source = profile.IsActive
+            ? _configPath
+            : Path.Combine(GetProfileStoragePath(profile.Name), "config");
+
+        if (!Directory.Exists(source))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var _ in Directory.GetDirectories(source))
+        {
+            count++;
+        }
+
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.TopDirectoryOnly))
+        {
+            var fileName = Path.GetFileName(file);
+            if (_excludedConfigs.Contains(fileName))
+            {
+                continue;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
     public void RenameProfileStorage(string oldName, string newName)
     {
         var oldPath = GetProfileStoragePath(oldName);
@@ -122,6 +153,73 @@ public sealed class ModProfileFileService
         }
 
         Directory.Move(oldPath, newPath);
+    }
+
+    public void DuplicateProfileStorage(string sourceName, string targetName, bool isSourceActive)
+    {
+        var sourcePath = isSourceActive ? _pluginsPath : GetProfileStoragePath(sourceName);
+        var sourceConfigPath = isSourceActive ? _configPath : Path.Combine(GetProfileStoragePath(sourceName), "config");
+        var targetPath = GetProfileStoragePath(targetName);
+        var targetPluginsPath = Path.Combine(targetPath, "plugins");
+        var targetConfigPath = Path.Combine(targetPath, "config");
+
+        if (Directory.Exists(targetPath))
+        {
+            throw new IOException("Target profile folder already exists.");
+        }
+
+        Directory.CreateDirectory(targetPath);
+
+        // Copy plugins
+        if (Directory.Exists(sourcePath))
+        {
+            Directory.CreateDirectory(targetPluginsPath);
+            foreach (var directory in Directory.GetDirectories(sourcePath))
+            {
+                var folderName = Path.GetFileName(directory);
+                if (_excludedModFolders.Contains(folderName))
+                {
+                    continue;
+                }
+
+                var destDir = Path.Combine(targetPluginsPath, folderName);
+                CopyDirectory(directory, destDir);
+            }
+
+            foreach (var file in Directory.GetFiles(sourcePath, "*.dll", SearchOption.TopDirectoryOnly))
+            {
+                if (ShouldSkipPluginFile(file))
+                {
+                    continue;
+                }
+
+                var destFile = Path.Combine(targetPluginsPath, Path.GetFileName(file));
+                File.Copy(file, destFile, overwrite: true);
+            }
+        }
+
+        // Copy configs
+        if (Directory.Exists(sourceConfigPath))
+        {
+            Directory.CreateDirectory(targetConfigPath);
+            foreach (var directory in Directory.GetDirectories(sourceConfigPath))
+            {
+                var destDir = Path.Combine(targetConfigPath, Path.GetFileName(directory));
+                CopyDirectory(directory, destDir);
+            }
+
+            foreach (var file in Directory.GetFiles(sourceConfigPath, "*", SearchOption.TopDirectoryOnly))
+            {
+                var fileName = Path.GetFileName(file);
+                if (_excludedConfigs.Contains(fileName))
+                {
+                    continue;
+                }
+
+                var destFile = Path.Combine(targetConfigPath, fileName);
+                File.Copy(file, destFile, overwrite: true);
+            }
+        }
     }
 
     public void DeleteProfileStorage(string profileName)
@@ -236,6 +334,23 @@ public sealed class ModProfileFileService
         }
 
         return false;
+    }
+
+    private static void CopyDirectory(string sourceDir, string destinationDir)
+    {
+        Directory.CreateDirectory(destinationDir);
+
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            var destFile = Path.Combine(destinationDir, Path.GetFileName(file));
+            File.Copy(file, destFile, overwrite: true);
+        }
+
+        foreach (var subDir in Directory.GetDirectories(sourceDir))
+        {
+            var destSubDir = Path.Combine(destinationDir, Path.GetFileName(subDir));
+            CopyDirectory(subDir, destSubDir);
+        }
     }
 }
 

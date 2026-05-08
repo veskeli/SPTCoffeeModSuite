@@ -10,6 +10,7 @@ public sealed class ModProfile : INotifyPropertyChanged
     private bool _isServerProfile;
     private bool _isActive;
     private int _modCount;
+    private int _configCount;
     private bool _isProtected;
 
     public string Name
@@ -72,6 +73,21 @@ public sealed class ModProfile : INotifyPropertyChanged
         }
     }
 
+    public int ConfigCount
+    {
+        get => _configCount;
+        set
+        {
+            if (_configCount == value)
+            {
+                return;
+            }
+
+            _configCount = value;
+            OnPropertyChanged();
+        }
+    }
+
     public bool IsProtected
     {
         get => _isProtected;
@@ -98,6 +114,7 @@ public sealed class ModProfile : INotifyPropertyChanged
             IsServerProfile = IsServerProfile,
             IsActive = IsActive,
             ModCount = ModCount,
+            ConfigCount = ConfigCount,
             IsProtected = IsProtected
         };
     }

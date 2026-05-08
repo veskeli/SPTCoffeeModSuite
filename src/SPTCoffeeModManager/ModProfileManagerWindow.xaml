@@ -13,11 +13,15 @@
         ResizeMode="CanResize"
         Background="{DynamicResource BrushAppBackground}"
         Foreground="{DynamicResource BrushTextPrimary}"
-        WindowStyle="None">
+        WindowStyle="None"
+        Padding="0">
+    <WindowChrome.WindowChrome>
+        <WindowChrome GlassFrameThickness="0" CaptionHeight="0" ResizeBorderThickness="5" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
     </Window.Resources>
-    <Grid>
+    <Grid Margin="0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -27,12 +31,12 @@
 
         <Grid Grid.Row="1" Margin="10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240" />
+                <ColumnDefinition Width="300" />
                 <ColumnDefinition Width="12" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
+            <Border Grid.Column="0" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="6">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" />
@@ -44,7 +48,7 @@
                              SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
                              Background="{DynamicResource BrushAppBackground}"
                              BorderBrush="{DynamicResource BrushBorder}"
-                             Margin="0,0,0,8">
+                             Margin="0,0,0,6">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <DockPanel Margin="4,2">
@@ -62,6 +66,7 @@
 
                     <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button Name="NewProfileButton" Content="New" Width="70" Margin="0,0,8,0" Style="{StaticResource ButtonSecondaryStyle}" Click="NewProfileButton_Click" />
+                        <Button Name="DuplicateProfileButton" Content="Duplicate" Width="85" Margin="0,0,8,0" Style="{StaticResource ButtonSecondaryStyle}" Click="DuplicateProfileButton_Click" IsEnabled="{Binding IsProfileSelected}" />
                         <Button Name="DeleteProfileButton" Content="Delete" Width="70" Style="{StaticResource ButtonDangerStyle}" Click="DeleteProfileButton_Click" IsEnabled="{Binding IsDeleteButtonEnabled}" />
                     </StackPanel>
                 </Grid>
@@ -103,7 +108,10 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="Profile Info" />
-                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Text="{Binding SelectedProfileModsText}" />
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Vertical">
+                            <TextBlock VerticalAlignment="Center" Text="{Binding SelectedProfileModsText}" />
+                            <TextBlock VerticalAlignment="Center" Text="{Binding SelectedProfileConfigsText}" Margin="0,4,0,0" />
+                        </StackPanel>
                     </Grid>
 
                     <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
