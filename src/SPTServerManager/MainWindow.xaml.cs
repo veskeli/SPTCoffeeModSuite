@@ -30,9 +30,11 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _headlessManagerButtonCooldownTimer = new();
 
     private bool _isHeadlessWaitingToBeStarted = false;
+    private bool _isHeadlessAutoStartInProgress = false;
     private bool _prevHeadlessRunning = false;
     private bool _prevSptServerRunning = false;
     private bool _headlessRestartNotified = false;
+    private CancellationTokenSource? _headlessAutoStartCts;
 
     private HubConnection? _hubConnection;
 
@@ -59,6 +61,18 @@ public partial class MainWindow : Window
     private const string MainDatabaseFolderName = "MainDatabase";
     private const string SptUpdateFolderName = "SptUpdate";
     private const string ConfigFilesFolderName = "ConfigFiles";
+    private const int HeadlessAutoStartMaxAttempts = 3;
+    private const int HeadlessStartupValidationSeconds = 10;
+    private const int SptReadyProbeIntervalSeconds = 1;
+    private const int SptReadyTimeoutSeconds = 120;
+
+    private static readonly Uri[] SptServerProbeUris =
+    {
+        new("https://127.0.0.1:6969/"),
+        new("https://localhost:6969/"),
+        new("http://127.0.0.1:6969/"),
+        new("http://localhost:6969/")
+    };
 
     public MainWindow()
     {
@@ -1209,7 +1223,6 @@ ON CONFLICT(key) DO UPDATE SET
         if (!IsProcessRunningRegex(@"^FikaHeadlessManager$"))
         {
             StartHeadlessWithDelay_Click(sender, e);
-            SetHeadlessManagerButtonAsStarting();
         }
     }
 
@@ -1279,27 +1292,145 @@ ON CONFLICT(key) DO UPDATE SET
         _headlessManagerButtonCooldownTimer.Start();
     }
 
-    // Headless safety timer as the spt server needs to be running before starting headless manager
-    private readonly DispatcherTimer _headlessSafetyTimer = new DispatcherTimer();
-
-    private void StartHeadlessWithDelay_Click(object sender, RoutedEventArgs e)
+    private async void StartHeadlessWithDelay_Click(object sender, RoutedEventArgs e)
     {
-        _headlessSafetyTimer.Interval = TimeSpan.FromSeconds(20);
-        _headlessSafetyTimer.Tick += HeadlessSafetyTimer_Tick;
-        _headlessSafetyTimer.Start();
+        if (_isHeadlessAutoStartInProgress)
+        {
+            return;
+        }
 
+        CancelHeadlessAutoStart();
+        _headlessAutoStartCts = new CancellationTokenSource();
+        var token = _headlessAutoStartCts.Token;
+
+        _isHeadlessAutoStartInProgress = true;
         _isHeadlessWaitingToBeStarted = true;
+        StartSptHeadlessManagerButton.IsEnabled = false;
+        StartSptHeadlessManagerButton.Content = "Waiting for SPT...";
+        StartSptHeadlessManagerButton.Background = Brushes.Orange;
+
+        try
+        {
+            var sptReady = await WaitForSptServerReadyAsync(token);
+            if (!sptReady)
+            {
+                MessageBox.Show("SPT server did not become reachable in time. Headless manager was not started.", "Timeout", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var headlessStarted = await StartHeadlessManagerWithRetryAsync(token);
+            if (!headlessStarted)
+            {
+                MessageBox.Show("Headless manager failed to stay running after multiple attempts.", "Headless Start Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignore cancels from manual stop operations.
+        }
+        finally
+        {
+            _isHeadlessAutoStartInProgress = false;
+            _isHeadlessWaitingToBeStarted = false;
+
+            if (_headlessAutoStartCts != null && _headlessAutoStartCts.Token == token)
+            {
+                _headlessAutoStartCts.Dispose();
+                _headlessAutoStartCts = null;
+            }
+        }
     }
 
-    private void HeadlessSafetyTimer_Tick(object? sender, EventArgs e)
+    private async Task<bool> WaitForSptServerReadyAsync(CancellationToken token)
     {
-        _headlessSafetyTimer.Stop();
-        StartSptHeadlessManager_Click(this, new RoutedEventArgs());
+        using var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        };
+        using var client = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(2)
+        };
+
+        var deadline = DateTime.UtcNow.AddSeconds(SptReadyTimeoutSeconds);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            token.ThrowIfCancellationRequested();
+
+            if (IsProcessRunningRegex(@"^SPT\.Server$") && await ProbeSptServerAsync(client, token))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(SptReadyProbeIntervalSeconds), token);
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> ProbeSptServerAsync(HttpClient client, CancellationToken token)
+    {
+        foreach (var probeUri in SptServerProbeUris)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, probeUri);
+                using var _ = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+                return true;
+            }
+            catch
+            {
+                // Probe next URL.
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<bool> StartHeadlessManagerWithRetryAsync(CancellationToken token)
+    {
+        for (var attempt = 1; attempt <= HeadlessAutoStartMaxAttempts; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+
+            if (IsProcessRunningRegex(@"^FikaHeadlessManager$"))
+            {
+                return true;
+            }
+
+            StartSptHeadlessManager_Click(this, new RoutedEventArgs());
+            await Task.Delay(TimeSpan.FromSeconds(HeadlessStartupValidationSeconds), token);
+
+            if (IsProcessRunningRegex(@"^FikaHeadlessManager$"))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(2), token);
+        }
+
+        return false;
+    }
+
+    private void CancelHeadlessAutoStart()
+    {
+        if (_headlessAutoStartCts == null)
+        {
+            return;
+        }
+
+        _headlessAutoStartCts.Cancel();
+        _headlessAutoStartCts.Dispose();
+        _headlessAutoStartCts = null;
+        _isHeadlessAutoStartInProgress = false;
         _isHeadlessWaitingToBeStarted = false;
     }
 
     private void StopAllServers_Click(object sender, RoutedEventArgs e)
     {
+        CancelHeadlessAutoStart();
+
         if (IsProcessRunningRegex(@"^SPTServerConsole$"))
         {
             // Reroute to existing close launcher method
