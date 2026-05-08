@@ -1,0 +1,8 @@
+﻿<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'SPTCoffee.Contracts'">
+    <_ContractsAssetsFramework Condition="'$(TargetFramework)' != ''">$(TargetFramework)</_ContractsAssetsFramework>
+    <_ContractsAssetsFramework Condition="'$(_ContractsAssetsFramework)' == ''">net8.0</_ContractsAssetsFramework>
+    <MSBuildProjectExtensionsPath>obj\$(_ContractsAssetsFramework)\</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+</Project>
+

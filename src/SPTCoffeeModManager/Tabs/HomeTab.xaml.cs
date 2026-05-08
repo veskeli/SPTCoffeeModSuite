@@ -106,16 +106,9 @@ public partial class HomeTab : UserControl
     {
         try
         {
-            AdminPanel.Visibility = config.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-            // Some templates use a separate AdminPanelText element
-            try
-            {
-                AdminPanelText.Visibility = config.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-            }
-            catch
-            {
-                // ignore if AdminPanelText not present
-            }
+            var vis = config.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+            AdminPanel.Visibility = vis;
+            AdminPanelText.Visibility = vis;
 
             KillHeadlessButton.Visibility = config.AllowHeadlessClose ? Visibility.Visible : Visibility.Collapsed;
         }

@@ -18,7 +18,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SPTCoffee.Contracts\SPTCoffee.Contracts.csproj"
-                      GlobalPropertiesToRemove="TargetFramework;TargetFrameworks;RuntimeIdentifier;SelfContained;PublishSingleFile;PublishTrimmed" />
+                      SetTargetFramework="TargetFramework=net8.0"
+                      GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;PublishSingleFile;PublishTrimmed" />
   </ItemGroup>
 
 </Project>

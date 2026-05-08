@@ -25,7 +25,7 @@
 
         </Grid>
 
-        <!-- Header: Mod Status and Admin panel label aligned on same row -->
+        <!-- Header: Mod Status and Mod profile label aligned on same row -->
         <Grid Grid.Row="1" Margin="0,6,0,2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="620" /> <!-- Match the width of the mod list below for alignment -->
@@ -39,7 +39,7 @@
                         Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
             </StackPanel>
 
-            <TextBlock Grid.Column="1" Text="Admin panel" Name="AdminPanelText" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="12,0,0,6" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="Mod profile" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="12,0,0,6" VerticalAlignment="Center" />
         </Grid>
 
         <!-- Two-column area: left = mod list, right = admin panel -->
@@ -97,9 +97,31 @@
 
             <!-- Admin panel container: header is in the top header row; keep container collapsed at runtime but visible in designer -->
             <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top" MinHeight="60" MinWidth="200">
-                <Border Name="AdminPanel" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
-                    <StackPanel Orientation="Horizontal">
-                        <Button Name="KillHeadlessButton" Content="Kill Headless" Padding="16,4,16,4" Margin="0,0,10,0" Background="{DynamicResource BrushDanger}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                <Border Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
+                    <StackPanel>
+
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
+                            <TextBlock Text="Profile:" Foreground="{DynamicResource BrushTextPrimary}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <ComboBox Name="ModProfileComboBox" Width="130" SelectedIndex="0">
+                                <ComboBoxItem Content="Server" />
+                                <ComboBoxItem Content="Custom" />
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <Button Name="NewProfileButton" Content="New" Padding="12,4,12,4" Margin="0,0,8,0" Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                            <Button Name="ManageProfileButton" Content="Manage" Padding="12,4,12,4" Background="{DynamicResource SecondaryBrushAccent}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Text="Admin panel" Name="AdminPanelText" Visibility="Collapsed" d:Visibility="Visible" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}" FontSize="12" Margin="0,8,0,6" />
+                <Border Name="AdminPanel" Visibility="Collapsed" d:Visibility="Visible" Background="{DynamicResource BrushSurface1}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="8">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Name="KillHeadlessButton" Content="Kill Headless" Padding="16,4,16,4" Margin="0,0,10,0" Background="{DynamicResource BrushDanger}" Foreground="{DynamicResource BrushTextPrimary}" BorderBrush="{DynamicResource BrushBorder}" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
             </StackPanel>
