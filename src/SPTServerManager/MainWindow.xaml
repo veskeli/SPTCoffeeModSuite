@@ -47,9 +47,40 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
+                        <ListView x:Name="ModListView" Grid.Row="0" Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Name" Width="160" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Version" Width="80" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="FileName" Width="160" DisplayMemberBinding="{Binding FileName}" />
+                                    <GridViewColumn Header="Folder Mod" Width="75" DisplayMemberBinding="{Binding IsFolderMod}" />
+                                    <GridViewColumn Header="Forced" Width="55" DisplayMemberBinding="{Binding IsForced}" />
+                                    <GridViewColumn Header="Headless" Width="65" DisplayMemberBinding="{Binding AllowOnHeadless}" />
+                                    <GridViewColumn Header="Optional" Width="65" DisplayMemberBinding="{Binding IsOptional}" />
+                                    <GridViewColumn Header="Opt. Default" Width="80" DisplayMemberBinding="{Binding OptionalDefaultState}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Left" Margin="0,0,0,4">
+                            <Button Content="Refresh Mod List" Width="130" Click="RefreshModList_Click" Background="DodgerBlue"/>
+                            <Button Content="Add Mod" Width="90" Margin="5,0,0,0" Click="AddMod_Click" Background="DodgerBlue"/>
+                            <Button Content="Edit Selected" Width="110" Margin="5,0,0,0" Click="EditMod_Click" Background="DodgerBlue"/>
+                            <Button Content="Remove Selected" Width="130" Margin="5,0,0,0" Click="RemoveMod_Click" Background="DarkRed"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
                             <Button Content="Open Zip Mod Folder" Width="180" Margin="0,0,0,0"
                                     Click="OpenZipModFolder_Click"/>
                             <Button Content="Update Mods" Width="150" Margin="5,0,0,0"

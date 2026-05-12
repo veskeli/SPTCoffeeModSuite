@@ -125,6 +125,9 @@ public partial class MainWindow : Window
         // Load admin list
         RefreshAdminListView();
 
+        // Load mod list
+        RefreshModListView();
+
         // Update/Create launcher config file
         try
         {
@@ -198,6 +201,7 @@ public partial class MainWindow : Window
                 using var connection = new SqliteConnection($"Data Source={_databasePath}");
                 connection.Open();
                 EnsureSptCoffeeSchema(connection);
+                MigratePluginsSchema(connection);
 
                 if (legacyConfig != null)
                 {
@@ -480,29 +484,29 @@ public partial class MainWindow : Window
         connection.Open();
 
         EnsureSptCoffeeSchema(connection);
+        MigratePluginsSchema(connection);
 
         using var tx = connection.BeginTransaction();
 
-        using (var clearCommand = connection.CreateCommand())
-        {
-            clearCommand.Transaction = tx;
-            clearCommand.CommandText = "DELETE FROM plugins;";
-            clearCommand.ExecuteNonQuery();
-        }
-
         foreach (var mod in mods)
         {
-            using var insertCommand = connection.CreateCommand();
-            insertCommand.Transaction = tx;
-            insertCommand.CommandText = @"
-INSERT INTO plugins(name, version, file_name, is_folder_mod, updated_utc)
-VALUES($name, $version, $fileName, $isFolderMod, $updatedUtc);";
-            insertCommand.Parameters.AddWithValue("$name", mod.Name);
-            insertCommand.Parameters.AddWithValue("$version", mod.Version);
-            insertCommand.Parameters.AddWithValue("$fileName", mod.FileName);
-            insertCommand.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
-            insertCommand.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
-            insertCommand.ExecuteNonQuery();
+            using var upsertCommand = connection.CreateCommand();
+            upsertCommand.Transaction = tx;
+            // UPSERT: on name conflict, update auto-detected fields but preserve manually-set flags
+            upsertCommand.CommandText = @"
+INSERT INTO plugins(name, version, file_name, is_folder_mod, is_forced, allow_on_headless, is_optional, optional_default_state, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, 0, 0, 0, 0, $updatedUtc)
+ON CONFLICT(name) DO UPDATE SET
+    version = excluded.version,
+    file_name = excluded.file_name,
+    is_folder_mod = excluded.is_folder_mod,
+    updated_utc = excluded.updated_utc;";
+            upsertCommand.Parameters.AddWithValue("$name", mod.Name);
+            upsertCommand.Parameters.AddWithValue("$version", mod.Version);
+            upsertCommand.Parameters.AddWithValue("$fileName", mod.FileName);
+            upsertCommand.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
+            upsertCommand.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+            upsertCommand.ExecuteNonQuery();
         }
 
         tx.Commit();
@@ -517,6 +521,10 @@ CREATE TABLE IF NOT EXISTS plugins (
     version TEXT NOT NULL,
     file_name TEXT NOT NULL,
     is_folder_mod INTEGER NOT NULL,
+    is_forced INTEGER NOT NULL DEFAULT 0,
+    allow_on_headless INTEGER NOT NULL DEFAULT 0,
+    is_optional INTEGER NOT NULL DEFAULT 0,
+    optional_default_state INTEGER NOT NULL DEFAULT 0,
     updated_utc TEXT NOT NULL
 );
 
@@ -542,6 +550,32 @@ CREATE TABLE IF NOT EXISTS admins (
     updated_utc TEXT NOT NULL
 );";
         command.ExecuteNonQuery();
+    }
+
+    private static void MigratePluginsSchema(SqliteConnection connection)
+    {
+        // Safely add new columns if upgrading from an older schema
+        var newColumns = new[]
+        {
+            ("is_forced", "INTEGER NOT NULL DEFAULT 0"),
+            ("allow_on_headless", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_optional", "INTEGER NOT NULL DEFAULT 0"),
+            ("optional_default_state", "INTEGER NOT NULL DEFAULT 0"),
+        };
+
+        foreach (var (col, def) in newColumns)
+        {
+            try
+            {
+                using var alter = connection.CreateCommand();
+                alter.CommandText = $"ALTER TABLE plugins ADD COLUMN {col} {def};";
+                alter.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Column already exists — safe to ignore
+            }
+        }
     }
 
     private void UpdateModsButtonState(bool enabled)
@@ -1485,6 +1519,175 @@ ON CONFLICT(key) DO UPDATE SET
     private void RefreshAdminList_Click(object sender, RoutedEventArgs e)
     {
         RefreshAdminListView();
+    }
+
+    // ──────────────────── Mod management ────────────────────
+
+    private List<ModInfo> LoadModsFromDatabase(SqliteConnection connection)
+    {
+        var mods = new List<ModInfo>();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT name, version, file_name, is_folder_mod,
+       is_forced, allow_on_headless, is_optional, optional_default_state
+FROM plugins ORDER BY name COLLATE NOCASE;";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            mods.Add(new ModInfo
+            {
+                Name = reader.GetString(0),
+                Version = reader.GetString(1),
+                FileName = reader.GetString(2),
+                IsFolderMod = reader.GetInt32(3) == 1,
+                IsForced = reader.GetInt32(4) == 1,
+                AllowOnHeadless = reader.GetInt32(5) == 1,
+                IsOptional = reader.GetInt32(6) == 1,
+                OptionalDefaultState = reader.GetInt32(7) == 1
+            });
+        }
+        return mods;
+    }
+
+    private void UpsertModInDatabase(SqliteConnection connection, ModInfo mod)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO plugins(name, version, file_name, is_folder_mod, is_forced, allow_on_headless, is_optional, optional_default_state, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, $isForced, $allowOnHeadless, $isOptional, $optionalDefaultState, $updatedUtc)
+ON CONFLICT(name) DO UPDATE SET
+    version = excluded.version,
+    file_name = excluded.file_name,
+    is_folder_mod = excluded.is_folder_mod,
+    is_forced = excluded.is_forced,
+    allow_on_headless = excluded.allow_on_headless,
+    is_optional = excluded.is_optional,
+    optional_default_state = excluded.optional_default_state,
+    updated_utc = excluded.updated_utc;";
+        command.Parameters.AddWithValue("$name", mod.Name);
+        command.Parameters.AddWithValue("$version", mod.Version);
+        command.Parameters.AddWithValue("$fileName", mod.FileName);
+        command.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
+        command.Parameters.AddWithValue("$isForced", mod.IsForced ? 1 : 0);
+        command.Parameters.AddWithValue("$allowOnHeadless", mod.AllowOnHeadless ? 1 : 0);
+        command.Parameters.AddWithValue("$isOptional", mod.IsOptional ? 1 : 0);
+        command.Parameters.AddWithValue("$optionalDefaultState", mod.OptionalDefaultState ? 1 : 0);
+        command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    private void DeleteModFromDatabase(SqliteConnection connection, string name)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM plugins WHERE name = $name COLLATE NOCASE;";
+        command.Parameters.AddWithValue("$name", name);
+        command.ExecuteNonQuery();
+    }
+
+    private void RefreshModListView()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath)) return;
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+            ModListView.ItemsSource = LoadModsFromDatabase(connection);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to load mod list: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RefreshModList_Click(object sender, RoutedEventArgs e) => RefreshModListView();
+
+    private void AddMod_Click(object sender, RoutedEventArgs e)
+    {
+        var editWindow = new ModEditWindow();
+        if (editWindow.ShowDialog() != true) return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+            UpsertModInDatabase(connection, editWindow.Result!);
+            RefreshModListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to save mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void EditMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModListView.SelectedItem is not ModInfo selected)
+        {
+            MessageBox.Show("Please select a mod to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var editWindow = new ModEditWindow(selected);
+        if (editWindow.ShowDialog() != true) return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+            UpsertModInDatabase(connection, editWindow.Result!);
+            RefreshModListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to save mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModListView.SelectedItem is not ModInfo selected)
+        {
+            MessageBox.Show("Please select a mod to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Remove mod \"{selected.Name}\" from the database?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            DeleteModFromDatabase(connection, selected.Name);
+            RefreshModListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to remove mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void AddAdmin_Click(object sender, RoutedEventArgs e)

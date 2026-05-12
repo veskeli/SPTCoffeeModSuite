@@ -15,5 +15,17 @@ public class ModInfo
 
     [JsonPropertyName("IsFolderMod")]
     public bool IsFolderMod { get; set; }
+
+    [JsonPropertyName("IsForced")]
+    public bool IsForced { get; set; }
+
+    [JsonPropertyName("AllowOnHeadless")]
+    public bool AllowOnHeadless { get; set; }
+
+    [JsonPropertyName("IsOptional")]
+    public bool IsOptional { get; set; }
+
+    [JsonPropertyName("OptionalDefaultState")]
+    public bool OptionalDefaultState { get; set; }
 }
 
