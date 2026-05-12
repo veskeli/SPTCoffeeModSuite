@@ -100,6 +100,7 @@ public partial class MainWindow : Window
         Batteries_V2.Init();
         LoadConfig();
         EnsureStorageFolders();
+        PopulateSettingsTabFromConfig();
 
         // Auto-start if the -AutoStartServers argument was supplied
         var args = Environment.GetCommandLineArgs();
@@ -950,26 +951,75 @@ ON CONFLICT(key) DO UPDATE SET
     }
 
 
-    private void OpenSettings_Click(object sender, RoutedEventArgs e)
+    private void PopulateSettingsTabFromConfig()
     {
-        var settingsWindow = new SettingsWindow
+        SettingsLauncherPortTextBox.Text = Config.Port.ToString();
+        SettingsServerFolderTextBox.Text = Config.SptServerFolder;
+        SettingsAdditionalModsTextBox.Text = Config.AdditionalModsPath;
+    }
+
+    private void SaveSettingsTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(SettingsLauncherPortTextBox.Text, out var port) || port <= 0 || port > 65535)
         {
-            LauncherPort = Config.Port.ToString(),
-            ServerFolderPath = Config.SptServerFolder,
-            AdditionalModsPath = Config.AdditionalModsPath
+            MessageBox.Show("Please enter a valid port number between 1 and 65535.", "Invalid Port", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        Config.Port = port;
+        Config.SptServerFolder = SettingsServerFolderTextBox.Text?.Trim() ?? string.Empty;
+        Config.AdditionalModsPath = SettingsAdditionalModsTextBox.Text?.Trim() ?? string.Empty;
+
+        SaveConfig(Config);
+        PopulateSettingsTabFromConfig();
+        MessageBox.Show("Settings saved.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void BrowseSettingsServerFolder_Click(object sender, RoutedEventArgs e)
+    {
+        using var folderDialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select SPT Server Folder"
         };
 
-        if (settingsWindow.ShowDialog() == true)
+        if (folderDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         {
-            if (int.TryParse(settingsWindow.LauncherPort, out var port))
-            {
-                Config.Port = port;
-            }
-            Config.SptServerFolder = settingsWindow.ServerFolderPath;
-            Config.AdditionalModsPath = settingsWindow.AdditionalModsPath;
-
-            SaveConfig(Config);
+            SettingsServerFolderTextBox.Text = folderDialog.SelectedPath;
         }
+    }
+
+    private void BrowseSettingsAdditionalModsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        using var folderDialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select Additional Mods Folder"
+        };
+
+        if (folderDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+        {
+            SettingsAdditionalModsTextBox.Text = folderDialog.SelectedPath;
+        }
+    }
+
+    private void OpenSettingsServerFolder_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFolderFromText(SettingsServerFolderTextBox.Text, "Server folder path does not exist!");
+    }
+
+    private void OpenSettingsAdditionalModsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFolderFromText(SettingsAdditionalModsTextBox.Text, "Additional mods path does not exist!");
+    }
+
+    private static void OpenFolderFromText(string? folderPath, string notFoundMessage)
+    {
+        if (!string.IsNullOrWhiteSpace(folderPath) && Directory.Exists(folderPath))
+        {
+            Process.Start("explorer.exe", folderPath);
+            return;
+        }
+
+        MessageBox.Show(notFoundMessage, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private readonly DispatcherTimer _statusTimer = new();
