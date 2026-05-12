@@ -500,8 +500,8 @@ public partial class MainWindow : Window
             upsertCommand.Transaction = tx;
             // UPSERT: on name conflict, update auto-detected fields but preserve manually-set flags
             upsertCommand.CommandText = @"
-INSERT INTO plugins(name, version, file_name, is_folder_mod, is_forced, allow_on_headless, is_optional, optional_default_state, updated_utc)
-VALUES($name, $version, $fileName, $isFolderMod, 0, 0, 0, 0, $updatedUtc)
+INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, 0, 0, 0, $updatedUtc)
 ON CONFLICT(name) DO UPDATE SET
     version = excluded.version,
     file_name = excluded.file_name,
@@ -527,7 +527,6 @@ CREATE TABLE IF NOT EXISTS plugins (
     version TEXT NOT NULL,
     file_name TEXT NOT NULL,
     is_folder_mod INTEGER NOT NULL,
-    is_forced INTEGER NOT NULL DEFAULT 0,
     allow_on_headless INTEGER NOT NULL DEFAULT 0,
     is_optional INTEGER NOT NULL DEFAULT 0,
     optional_default_state INTEGER NOT NULL DEFAULT 0,
@@ -563,7 +562,6 @@ CREATE TABLE IF NOT EXISTS admins (
         // Safely add new columns if upgrading from an older schema
         var newColumns = new[]
         {
-            ("is_forced", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_on_headless", "INTEGER NOT NULL DEFAULT 0"),
             ("is_optional", "INTEGER NOT NULL DEFAULT 0"),
             ("optional_default_state", "INTEGER NOT NULL DEFAULT 0"),
@@ -1535,7 +1533,7 @@ ON CONFLICT(key) DO UPDATE SET
         using var command = connection.CreateCommand();
         command.CommandText = @"
 SELECT name, version, file_name, is_folder_mod,
-       is_forced, allow_on_headless, is_optional, optional_default_state
+       allow_on_headless, is_optional, optional_default_state
 FROM plugins ORDER BY name COLLATE NOCASE;";
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -1546,10 +1544,9 @@ FROM plugins ORDER BY name COLLATE NOCASE;";
                 Version = reader.GetString(1),
                 FileName = reader.GetString(2),
                 IsFolderMod = reader.GetInt32(3) == 1,
-                IsForced = reader.GetInt32(4) == 1,
-                AllowOnHeadless = reader.GetInt32(5) == 1,
-                IsOptional = reader.GetInt32(6) == 1,
-                OptionalDefaultState = reader.GetInt32(7) == 1
+                AllowOnHeadless = reader.GetInt32(4) == 1,
+                IsOptional = reader.GetInt32(5) == 1,
+                OptionalDefaultState = reader.GetInt32(6) == 1
             });
         }
         return mods;
@@ -1559,13 +1556,12 @@ FROM plugins ORDER BY name COLLATE NOCASE;";
     {
         using var command = connection.CreateCommand();
         command.CommandText = @"
-INSERT INTO plugins(name, version, file_name, is_folder_mod, is_forced, allow_on_headless, is_optional, optional_default_state, updated_utc)
-VALUES($name, $version, $fileName, $isFolderMod, $isForced, $allowOnHeadless, $isOptional, $optionalDefaultState, $updatedUtc)
+INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState, $updatedUtc)
 ON CONFLICT(name) DO UPDATE SET
     version = excluded.version,
     file_name = excluded.file_name,
     is_folder_mod = excluded.is_folder_mod,
-    is_forced = excluded.is_forced,
     allow_on_headless = excluded.allow_on_headless,
     is_optional = excluded.is_optional,
     optional_default_state = excluded.optional_default_state,
@@ -1574,7 +1570,6 @@ ON CONFLICT(name) DO UPDATE SET
         command.Parameters.AddWithValue("$version", mod.Version);
         command.Parameters.AddWithValue("$fileName", mod.FileName);
         command.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
-        command.Parameters.AddWithValue("$isForced", mod.IsForced ? 1 : 0);
         command.Parameters.AddWithValue("$allowOnHeadless", mod.AllowOnHeadless ? 1 : 0);
         command.Parameters.AddWithValue("$isOptional", mod.IsOptional ? 1 : 0);
         command.Parameters.AddWithValue("$optionalDefaultState", mod.OptionalDefaultState ? 1 : 0);

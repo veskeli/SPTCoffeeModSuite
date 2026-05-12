@@ -17,7 +17,6 @@ public partial class ModEditWindow : Window
             VersionBox.Text = existing.Version;
             FileNameBox.Text = existing.FileName;
             IsFolderModCheck.IsChecked = existing.IsFolderMod;
-            IsForcedCheck.IsChecked = existing.IsForced;
             AllowOnHeadlessCheck.IsChecked = existing.AllowOnHeadless;
             IsOptionalCheck.IsChecked = existing.IsOptional;
             OptionalDefaultStateCheck.IsChecked = existing.OptionalDefaultState;
@@ -39,7 +38,6 @@ public partial class ModEditWindow : Window
             Version = VersionBox.Text.Trim(),
             FileName = FileNameBox.Text.Trim(),
             IsFolderMod = IsFolderModCheck.IsChecked == true,
-            IsForced = IsForcedCheck.IsChecked == true,
             AllowOnHeadless = AllowOnHeadlessCheck.IsChecked == true,
             IsOptional = IsOptionalCheck.IsChecked == true,
             OptionalDefaultState = OptionalDefaultStateCheck.IsChecked == true

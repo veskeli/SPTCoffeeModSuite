@@ -104,27 +104,6 @@
                                         </GridViewColumn.CellTemplate>
                                     </GridViewColumn>
 
-                                    <GridViewColumn Header="Forced" Width="65">
-                                        <GridViewColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <TextBlock HorizontalAlignment="Center">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Text" Value="False"/>
-                                                            <Setter Property="Foreground" Value="Tomato"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsForced}" Value="True">
-                                                                    <Setter Property="Text" Value="True"/>
-                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
-                                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                            </DataTemplate>
-                                        </GridViewColumn.CellTemplate>
-                                    </GridViewColumn>
 
                                     <GridViewColumn Header="Headless" Width="75">
                                         <GridViewColumn.CellTemplate>

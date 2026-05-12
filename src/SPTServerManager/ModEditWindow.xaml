@@ -34,7 +34,6 @@
 
             <!-- Checkboxes -->
             <CheckBox x:Name="IsFolderModCheck" Content="Is Folder Mod" Foreground="White" Margin="0,4"/>
-            <CheckBox x:Name="IsForcedCheck" Content="Is Forced (always installed)" Foreground="White" Margin="0,4"/>
             <CheckBox x:Name="AllowOnHeadlessCheck" Content="Allow On Headless" Foreground="White" Margin="0,4"/>
             <CheckBox x:Name="IsOptionalCheck" Content="Is Optional" Foreground="White" Margin="0,4"/>
             <CheckBox x:Name="OptionalDefaultStateCheck" Content="Optional Default State (enabled by default)" Foreground="White" Margin="0,4"/>
