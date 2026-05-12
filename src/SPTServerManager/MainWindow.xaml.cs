@@ -974,7 +974,7 @@ ON CONFLICT(key) DO UPDATE SET
 
     private readonly DispatcherTimer _statusTimer = new();
 
-    private async void StatusTimer_Tick(object? sender, EventArgs e)
+    private void StatusTimer_Tick(object? sender, EventArgs e)
     {
         try
         {
@@ -1079,19 +1079,19 @@ ON CONFLICT(key) DO UPDATE SET
         catch { /* Ignore exceptions in status update */ }
     }
 
-    private async void LauncherButtonCooldownTimer_Tick(object? sender, EventArgs e)
+    private void LauncherButtonCooldownTimer_Tick(object? sender, EventArgs e)
     {
         StartLauncherServerButton.IsEnabled = true;
         _launcherButtonCooldownTimer.Stop();
     }
 
-    private async void SptServerButtonCooldownTimer_Tick(object? sender, EventArgs e)
+    private void SptServerButtonCooldownTimer_Tick(object? sender, EventArgs e)
     {
         StartSptServerButton.IsEnabled = true;
         _sptServerButtonCooldownTimer.Stop();
     }
 
-    private async void HeadlessManagerButtonCooldownTimer_Tick(object? sender, EventArgs e)
+    private void HeadlessManagerButtonCooldownTimer_Tick(object? sender, EventArgs e)
     {
         StartSptHeadlessManagerButton.IsEnabled = true;
         _headlessManagerButtonCooldownTimer.Stop();
