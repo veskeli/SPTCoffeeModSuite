@@ -25,5 +25,12 @@ public class ModInfo
 
     [JsonPropertyName("OptionalDefaultState")]
     public bool OptionalDefaultState { get; set; }
-}
 
+    // Pending change state: empty string = no change, "add" = pending addition, "delete" = pending deletion, "update" = pending update
+    [JsonIgnore]
+    public string PendingChangeState { get; set; } = string.Empty;
+
+    // For update operations: stores the new version
+    [JsonIgnore]
+    public string? NewVersion { get; set; }
+}

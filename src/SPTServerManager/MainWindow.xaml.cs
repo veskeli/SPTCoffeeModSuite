@@ -38,6 +38,10 @@ public partial class MainWindow : Window
 
     private HubConnection? _hubConnection;
 
+    private readonly Dictionary<string, ModInfo> _pendingChanges = new(StringComparer.OrdinalIgnoreCase);
+    private bool _restartServersIfUpdateStartedOnline;
+    private bool _isInitializingRestartCheckbox = true;
+
     private static string BaseUrl => "http://localhost:25569";
 
     private readonly List<string> _excludedMods = new List<string>
@@ -61,6 +65,7 @@ public partial class MainWindow : Window
     private const string MainDatabaseFolderName = "MainDatabase";
     private const string SptUpdateFolderName = "SptUpdate";
     private const string ConfigFilesFolderName = "ConfigFiles";
+    private const string RestartServersAfterPendingUpdateSettingKey = "restart_servers_after_pending_update";
     private const int HeadlessAutoStartMaxAttempts = 3;
     private const int HeadlessStartupValidationSeconds = 10;
     private const int SptReadyProbeIntervalSeconds = 1;
@@ -135,6 +140,11 @@ public partial class MainWindow : Window
         // Load installed plugins list
         RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
 
+        // Load pending changes from database
+        LoadPendingChangesFromDatabase();
+        RestartServersCheckBox.IsChecked = _restartServersIfUpdateStartedOnline;
+        _isInitializingRestartCheckbox = false;
+
         // Update/Create launcher config file
         try
         {
@@ -201,6 +211,7 @@ public partial class MainWindow : Window
             }
 
             Config.Port = bootstrap?.Port > 0 ? bootstrap.Port : (legacyConfig?.Port ?? Config.Port);
+            _restartServersIfUpdateStartedOnline = bootstrap?.RestartServersIfUpdateStartedOnline ?? false;
             _databasePath = ResolveDatabasePath(bootstrap?.DatabaseFileName);
 
             if (_databasePath != null)
@@ -236,7 +247,8 @@ public partial class MainWindow : Window
             var bootstrap = new BootstrapConfig
             {
                 Port = cfg.Port,
-                DatabaseFileName = GetDatabasePathForBootstrapSave()
+                DatabaseFileName = GetDatabasePathForBootstrapSave(),
+                RestartServersIfUpdateStartedOnline = _restartServersIfUpdateStartedOnline
             };
             var json = JsonSerializer.Serialize(bootstrap, new JsonSerializerOptions { WriteIndented = true });
             if (_configPath != null)
@@ -554,8 +566,48 @@ CREATE TABLE IF NOT EXISTS admins (
     is_enabled INTEGER NOT NULL,
     allow_headless_close INTEGER NOT NULL,
     updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mod_name TEXT NOT NULL COLLATE NOCASE,
+    change_type TEXT NOT NULL,
+    old_version TEXT,
+    new_version TEXT,
+    file_name TEXT NOT NULL DEFAULT '',
+    is_folder_mod INTEGER NOT NULL DEFAULT 0,
+    allow_on_headless INTEGER NOT NULL DEFAULT 0,
+    is_optional INTEGER NOT NULL DEFAULT 0,
+    optional_default_state INTEGER NOT NULL DEFAULT 0,
+    created_utc TEXT NOT NULL
 );";
         command.ExecuteNonQuery();
+    }
+
+    private static void MigratePendingChangesSchema(SqliteConnection connection)
+    {
+        var newColumns = new[]
+        {
+            ("file_name", "TEXT NOT NULL DEFAULT ''"),
+            ("is_folder_mod", "INTEGER NOT NULL DEFAULT 0"),
+            ("allow_on_headless", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_optional", "INTEGER NOT NULL DEFAULT 0"),
+            ("optional_default_state", "INTEGER NOT NULL DEFAULT 0")
+        };
+
+        foreach (var (col, def) in newColumns)
+        {
+            try
+            {
+                using var alter = connection.CreateCommand();
+                alter.CommandText = $"ALTER TABLE pending_changes ADD COLUMN {col} {def};";
+                alter.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Column already exists — safe to ignore.
+            }
+        }
     }
 
     private static void MigratePluginsSchema(SqliteConnection connection)
@@ -1061,6 +1113,9 @@ ON CONFLICT(key) DO UPDATE SET
             // Update close headless (as the manager opens it, we only enable closing when its actually running)
             CloseSptHeadlessButton.IsEnabled = headlessClientRunning;
             CloseSptHeadlessButton.Background = headlessClientRunning ? Brushes.DarkRed : Brushes.Gray;
+
+            // Update pending changes button state
+            UpdatePendingChangesButtonState();
 
             // If disable timers are running, stop them and re-enable buttons
             if (_launcherButtonCooldownTimer.IsEnabled)
@@ -1644,7 +1699,37 @@ ON CONFLICT(name) DO UPDATE SET
             connection.Open();
             EnsureSptCoffeeSchema(connection);
             MigratePluginsSchema(connection);
-            ModListView.ItemsSource = LoadModsFromDatabase(connection);
+            var mods = LoadModsFromDatabase(connection);
+
+            // Apply pending change states to the loaded mods
+            foreach (var mod in mods)
+            {
+                if (_pendingChanges.TryGetValue(mod.Name, out var pendingMod))
+                {
+                    mod.PendingChangeState = pendingMod.PendingChangeState;
+                    mod.NewVersion = pendingMod.NewVersion;
+                }
+            }
+
+            foreach (var pendingAdd in _pendingChanges.Values
+                         .Where(m => string.Equals(m.PendingChangeState, "add", StringComparison.OrdinalIgnoreCase)
+                                     && mods.All(x => !string.Equals(x.Name, m.Name, StringComparison.OrdinalIgnoreCase))))
+            {
+                mods.Add(new ModInfo
+                {
+                    Name = pendingAdd.Name,
+                    Version = pendingAdd.Version,
+                    FileName = pendingAdd.FileName,
+                    IsFolderMod = pendingAdd.IsFolderMod,
+                    AllowOnHeadless = pendingAdd.AllowOnHeadless,
+                    IsOptional = pendingAdd.IsOptional,
+                    OptionalDefaultState = pendingAdd.OptionalDefaultState,
+                    PendingChangeState = pendingAdd.PendingChangeState,
+                    NewVersion = pendingAdd.NewVersion
+                });
+            }
+
+            ModListView.ItemsSource = mods.OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
         catch (Exception ex)
         {
@@ -1661,21 +1746,17 @@ ON CONFLICT(name) DO UPDATE SET
 
         try
         {
-            if (string.IsNullOrWhiteSpace(_databasePath))
-            {
-                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            connection.Open();
-            EnsureSptCoffeeSchema(connection);
-            MigratePluginsSchema(connection);
-            UpsertModInDatabase(connection, editWindow.Result!);
+            var newMod = editWindow.Result!;
+            newMod.PendingChangeState = "add";
+            _pendingChanges[newMod.Name] = newMod;
             RefreshModListView();
+            RefreshPendingChanges_Internal();
+            SavePendingChangesToDatabase();
+            MessageBox.Show($"Mod \"{newMod.Name}\" added to pending changes.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show("Failed to save mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show("Failed to add mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1692,16 +1773,32 @@ ON CONFLICT(name) DO UPDATE SET
 
         try
         {
-            if (string.IsNullOrWhiteSpace(_databasePath))
+            var updatedMod = editWindow.Result!;
+
+            // If the mod has a pending change state, preserve it
+            if (_pendingChanges.TryGetValue(selected.Name, out var pendingMod))
             {
-                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                updatedMod.PendingChangeState = pendingMod.PendingChangeState;
+                updatedMod.NewVersion = pendingMod.NewVersion;
+                _pendingChanges[selected.Name] = updatedMod;
+                SavePendingChangesToDatabase();
+                RefreshPendingChanges_Internal();
             }
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            connection.Open();
-            EnsureSptCoffeeSchema(connection);
-            MigratePluginsSchema(connection);
-            UpsertModInDatabase(connection, editWindow.Result!);
+            else
+            {
+                // No pending changes, save directly to database
+                if (string.IsNullOrWhiteSpace(_databasePath))
+                {
+                    MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+                EnsureSptCoffeeSchema(connection);
+                MigratePluginsSchema(connection);
+                UpsertModInDatabase(connection, updatedMod);
+            }
+
             RefreshModListView();
         }
         catch (Exception ex)
@@ -1718,26 +1815,57 @@ ON CONFLICT(name) DO UPDATE SET
             return;
         }
 
-        if (MessageBox.Show($"Remove mod \"{selected.Name}\" from the database?", "Confirm",
+        if (MessageBox.Show($"Mark mod \"{selected.Name}\" for deletion? This will be applied when you update changes.", "Confirm",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
         try
         {
-            if (string.IsNullOrWhiteSpace(_databasePath))
-            {
-                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            connection.Open();
-            EnsureSptCoffeeSchema(connection);
-            DeleteModFromDatabase(connection, selected.Name);
+            selected.PendingChangeState = "delete";
+            _pendingChanges[selected.Name] = selected;
             RefreshModListView();
+            RefreshPendingChanges_Internal();
+            SavePendingChangesToDatabase();
+            MessageBox.Show($"Mod \"{selected.Name}\" marked for deletion.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show("Failed to remove mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show("Failed to mark mod for removal: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void UpdateSelectedMod_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModListView.SelectedItem is not ModInfo selected)
+        {
+            MessageBox.Show("Please select a mod to update.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var updateWindow = new UpdateModWindow(selected);
+        if (updateWindow.ShowDialog() != true) return;
+
+        try
+        {
+            var updatedMod = updateWindow.Result!;
+            if (updatedMod.NewVersion == null || string.Equals(updatedMod.NewVersion, selected.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show("The new version is the same as the current version.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // Mark as update pending
+            updatedMod.PendingChangeState = "update";
+            updatedMod.NewVersion = updateWindow.Result!.NewVersion;
+            _pendingChanges[selected.Name] = updatedMod;
+            RefreshModListView();
+            RefreshPendingChanges_Internal();
+            SavePendingChangesToDatabase();
+            MessageBox.Show($"Mod \"{selected.Name}\" marked for update (v{selected.Version} → v{updatedMod.NewVersion}).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to update mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2271,6 +2399,297 @@ ON CONFLICT(file_name) DO UPDATE SET
             MessageBox.Show("Failed to update mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    // ──────────────────── Pending Changes management ────────────────────
+
+    private void LoadPendingChangesFromDatabase()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath))
+            return;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
+
+            _pendingChanges.Clear();
+
+            var dbMods = LoadModsFromDatabase(connection).ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT mod_name, change_type, old_version, new_version,
+       file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state
+FROM pending_changes 
+ORDER BY id;";
+            using var reader = command.ExecuteReader();
+
+            while (reader.Read())
+            {
+                string modName = reader.GetString(0);
+                string changeType = reader.GetString(1);
+                string? oldVersion = reader.IsDBNull(2) ? null : reader.GetString(2);
+                string? newVersion = reader.IsDBNull(3) ? null : reader.GetString(3);
+                string fileName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                bool isFolderMod = !reader.IsDBNull(5) && reader.GetInt32(5) == 1;
+                bool allowOnHeadless = !reader.IsDBNull(6) && reader.GetInt32(6) == 1;
+                bool isOptional = !reader.IsDBNull(7) && reader.GetInt32(7) == 1;
+                bool optionalDefaultState = !reader.IsDBNull(8) && reader.GetInt32(8) == 1;
+
+                dbMods.TryGetValue(modName, out var dbMod);
+                var mod = new ModInfo
+                {
+                    Name = modName,
+                    Version = string.IsNullOrWhiteSpace(oldVersion) ? (dbMod?.Version ?? string.Empty) : oldVersion,
+                    FileName = string.IsNullOrWhiteSpace(fileName) ? (dbMod?.FileName ?? (modName + ".zip")) : fileName,
+                    IsFolderMod = isFolderMod || (dbMod?.IsFolderMod ?? false),
+                    AllowOnHeadless = allowOnHeadless || (dbMod?.AllowOnHeadless ?? false),
+                    IsOptional = isOptional || (dbMod?.IsOptional ?? false),
+                    OptionalDefaultState = optionalDefaultState || (dbMod?.OptionalDefaultState ?? false),
+                    PendingChangeState = changeType,
+                    NewVersion = string.IsNullOrWhiteSpace(newVersion) ? null : newVersion
+                };
+                _pendingChanges[modName] = mod;
+            }
+
+            RefreshModListView();
+            RefreshPendingChanges_Internal();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to load pending changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void SavePendingChangesToDatabase()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath))
+            return;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
+
+            using var tx = connection.BeginTransaction();
+
+            // Clear existing pending changes
+            using (var clearCmd = connection.CreateCommand())
+            {
+                clearCmd.Transaction = tx;
+                clearCmd.CommandText = "DELETE FROM pending_changes;";
+                clearCmd.ExecuteNonQuery();
+            }
+
+            // Insert current pending changes
+            foreach (var (name, mod) in _pendingChanges)
+            {
+                using var insertCmd = connection.CreateCommand();
+                insertCmd.Transaction = tx;
+                insertCmd.CommandText = @"
+INSERT INTO pending_changes(
+    mod_name, change_type, old_version, new_version, created_utc,
+    file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state)
+VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState);";
+                insertCmd.Parameters.AddWithValue("$modName", name);
+                insertCmd.Parameters.AddWithValue("$changeType", mod.PendingChangeState);
+                insertCmd.Parameters.AddWithValue("$oldVersion", mod.Version ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$newVersion", mod.NewVersion ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$createdUtc", DateTime.UtcNow.ToString("O"));
+                insertCmd.Parameters.AddWithValue("$fileName", mod.FileName ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
+                insertCmd.Parameters.AddWithValue("$allowOnHeadless", mod.AllowOnHeadless ? 1 : 0);
+                insertCmd.Parameters.AddWithValue("$isOptional", mod.IsOptional ? 1 : 0);
+                insertCmd.Parameters.AddWithValue("$optionalDefaultState", mod.OptionalDefaultState ? 1 : 0);
+                insertCmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to save pending changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RefreshPendingChanges_Internal()
+    {
+        try
+        {
+            var pendingList = _pendingChanges.Values.ToList();
+            PendingChangesListView.ItemsSource = pendingList;
+
+            // Update button state based on server status
+            UpdatePendingChangesButtonState();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to refresh pending changes: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RefreshPendingChanges_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshPendingChanges_Internal();
+    }
+
+    private void RevertSelectedPendingChange_Click(object sender, RoutedEventArgs e)
+    {
+        if (PendingChangesListView.SelectedItem is not ModInfo selected)
+        {
+            MessageBox.Show("Please select a pending change to revert.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Revert pending change for mod \"{selected.Name}\"?", "Confirm Revert",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _pendingChanges.Remove(selected.Name);
+        SavePendingChangesToDatabase();
+        RefreshModListView();
+        RefreshPendingChanges_Internal();
+    }
+
+    private void RestartServersCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isInitializingRestartCheckbox)
+        {
+            return;
+        }
+
+        _restartServersIfUpdateStartedOnline = RestartServersCheckBox.IsChecked == true;
+        SaveConfig(Config);
+    }
+
+    private void UpdatePendingChangesButtonState()
+    {
+        bool launcherRunning = IsProcessRunningRegex(@"^SPTServerConsole$");
+        bool sptServerRunning = IsProcessRunningRegex(@"^SPT\.Server$");
+        bool headlessManagerRunning = IsProcessRunningRegex(@"^FikaHeadlessManager$");
+        bool headlessClientRunning = IsProcessRunningRegex(@"^EscapeFromTarkov$");
+
+        bool anyServerRunning = launcherRunning || sptServerRunning || headlessManagerRunning || headlessClientRunning;
+        bool hasPendingChanges = _pendingChanges.Count > 0;
+
+        if (!hasPendingChanges)
+        {
+            UpdateChangesButton.IsEnabled = false;
+            UpdateChangesButton.Content = "Update Changes (No pending changes)";
+            UpdateChangesButton.Background = Brushes.Gray;
+        }
+        else if (anyServerRunning)
+        {
+            UpdateChangesButton.IsEnabled = true;
+            UpdateChangesButton.Content = "Update Changes (Servers online)";
+            UpdateChangesButton.Background = Brushes.Orange;
+        }
+        else
+        {
+            UpdateChangesButton.IsEnabled = true;
+            UpdateChangesButton.Content = "Update Changes";
+            UpdateChangesButton.Background = Brushes.Green;
+        }
+    }
+
+    private async void UpdatePendingChanges_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingChanges.Count == 0)
+        {
+            MessageBox.Show("No pending changes to apply.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        bool launcherRunning = IsProcessRunningRegex(@"^SPTServerConsole$");
+        bool sptServerRunning = IsProcessRunningRegex(@"^SPT\.Server$");
+        bool headlessManagerRunning = IsProcessRunningRegex(@"^FikaHeadlessManager$");
+        bool headlessClientRunning = IsProcessRunningRegex(@"^EscapeFromTarkov$");
+
+        bool anyServerRunning = launcherRunning || sptServerRunning || headlessManagerRunning || headlessClientRunning;
+        bool restartServers = RestartServersCheckBox.IsChecked == true;
+
+        if (anyServerRunning)
+        {
+            var result = MessageBox.Show(
+                "Servers are online. Are you sure you want to close them and apply changes?\n\n" +
+                (restartServers ? "Servers will be restarted after changes are applied." : ""),
+                "Confirm",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            // Close all servers
+            StopAllServers_Click(this, new RoutedEventArgs());
+
+            // Wait for servers to stop
+            await Task.Delay(3000);
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+
+            // Apply all pending changes
+            foreach (var (name, mod) in _pendingChanges)
+            {
+                if (mod.PendingChangeState == "add")
+                {
+                    UpsertModInDatabase(connection, mod);
+                }
+                else if (mod.PendingChangeState == "delete")
+                {
+                    DeleteModFromDatabase(connection, name);
+                }
+                else if (mod.PendingChangeState == "update")
+                {
+                    // For update, just update the version and new version becomes the version
+                    if (!string.IsNullOrWhiteSpace(mod.NewVersion))
+                    {
+                        mod.Version = mod.NewVersion;
+                        mod.NewVersion = null; // Clear the new version after applying
+                        UpsertModInDatabase(connection, mod);
+                    }
+                }
+            }
+
+            // Clear pending changes
+            _pendingChanges.Clear();
+            SavePendingChangesToDatabase();
+
+            MessageBox.Show("Pending changes applied successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            RefreshModListView();
+            RefreshPendingChanges_Internal();
+
+            // Restart servers if option is checked and they were running
+            if (anyServerRunning && restartServers)
+            {
+                MessageBox.Show("Restarting servers...", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+                StartAllServers_Click(this, new RoutedEventArgs());
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to apply pending changes: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 }
 
 public class ServerConfig
@@ -2284,6 +2703,7 @@ public class BootstrapConfig
 {
     public int Port { get; set; } = 25569;
     public string DatabaseFileName { get; set; } = "MainDatabase\\SPTCoffee.db";
+    public bool RestartServersIfUpdateStartedOnline { get; set; }
 }
 
 public class InstalledPluginViewModel
