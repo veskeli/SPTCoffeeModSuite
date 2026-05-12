@@ -128,6 +128,9 @@ public partial class MainWindow : Window
         // Load mod list
         RefreshModListView();
 
+        // Load installed plugins list
+        RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
+
         // Update/Create launcher config file
         try
         {
@@ -1842,6 +1845,216 @@ ON CONFLICT(name) DO UPDATE SET
             return;
         }
     }
+
+    private void RefreshInstalledPlugins_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            InstalledPluginsListView.ItemsSource = ScanInstalledPlugins();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to scan installed plugins: " + ex.Message, "Error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private List<InstalledPluginViewModel> ScanInstalledPlugins()
+    {
+        var excludedMods = new HashSet<string>(_excludedMods, StringComparer.OrdinalIgnoreCase);
+        var excludedFolders = new HashSet<string>(_excludedModFolders, StringComparer.OrdinalIgnoreCase);
+
+        // Load DB entries for cross-reference
+        Dictionary<string, ModInfo> dbMods = new(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_databasePath) && File.Exists(_databasePath))
+        {
+            try
+            {
+                using var conn = new SqliteConnection($"Data Source={_databasePath}");
+                conn.Open();
+                EnsureSptCoffeeSchema(conn);
+                MigratePluginsSchema(conn);
+                foreach (var m in LoadModsFromDatabase(conn))
+                    dbMods[m.Name] = m;
+            }
+            catch { /* best-effort */ }
+        }
+
+        // Discover plugins from SPT server folder (used for both Server and Headless)
+        var pluginsPath = Path.Combine(Config.SptServerFolder, "BepInEx", "plugins");
+        var discovered = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (Directory.Exists(pluginsPath))
+        {
+            // Folder mods
+            foreach (var dir in Directory.GetDirectories(pluginsPath))
+            {
+                var name = Path.GetFileName(dir);
+                if (excludedFolders.Contains(name)) continue;
+
+                var dlls = Directory.GetFiles(dir, "*.dll", SearchOption.AllDirectories);
+                if (dlls.Length == 0) continue;
+
+                var ver = FileVersionInfo.GetVersionInfo(dlls[0]).FileVersion ?? "0";
+                discovered[name] = ver;
+            }
+
+            // DLL mods
+            foreach (var dll in Directory.GetFiles(pluginsPath, "*.dll", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(dll);
+                if (excludedMods.Contains(name)) continue;
+
+                var ver = FileVersionInfo.GetVersionInfo(dll).FileVersion ?? "0";
+                discovered[name] = ver;
+            }
+        }
+
+        var result = new List<InstalledPluginViewModel>();
+
+        foreach (var (name, fileVer) in discovered
+                     .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            string source = "local";
+
+            dbMods.TryGetValue(name, out var dbEntry);
+            string dbVer = dbEntry?.Version ?? "-";
+
+            // Build status
+            var statusParts = new List<string>();
+            System.Windows.Media.Brush brush = System.Windows.Media.Brushes.LimeGreen;
+            string weight = "Normal";
+
+            if (dbEntry == null)
+            {
+                statusParts.Add("Not in database");
+                brush = System.Windows.Media.Brushes.Gray;
+            }
+            else
+            {
+                bool versionMismatch = !string.IsNullOrWhiteSpace(dbVer) && dbVer != "-"
+                    && !string.Equals(fileVer, dbVer, StringComparison.OrdinalIgnoreCase);
+
+                if (versionMismatch)
+                {
+                    statusParts.Add("Outdated");
+                    brush = System.Windows.Media.Brushes.Orange;
+                    weight = "Bold";
+                }
+
+                if (!dbEntry.AllowOnHeadless)
+                {
+                    statusParts.Add("Not allowed on Headless");
+                    brush = System.Windows.Media.Brushes.OrangeRed;
+                    weight = "Bold";
+                }
+
+                if (statusParts.Count == 0)
+                {
+                    statusParts.Add("Up to date");
+                    brush = System.Windows.Media.Brushes.LimeGreen;
+                }
+            }
+
+            result.Add(new InstalledPluginViewModel
+            {
+                Name = name,
+                FileVersion = fileVer,
+                DbVersion = dbVer,
+                Source = source,
+                Status = string.Join(" · ", statusParts),
+                StatusBrush = brush,
+                StatusFontWeight = weight
+            });
+        }
+
+        // Add database-only mods (not installed locally)
+        foreach (var (name, dbEntry) in dbMods
+                     .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (discovered.ContainsKey(name))
+                continue; // Already processed as local
+
+            // Skip database-only mods that are not allowed on headless
+            if (!dbEntry.AllowOnHeadless)
+                continue;
+
+            var statusParts = new List<string>();
+            var brush = System.Windows.Media.Brushes.LimeGreen;
+            string weight = "Normal";
+
+            statusParts.Add("Not installed");
+            brush = System.Windows.Media.Brushes.Yellow;
+            weight = "Bold";
+
+            result.Add(new InstalledPluginViewModel
+            {
+                Name = name,
+                FileVersion = "-",
+                DbVersion = dbEntry.Version,
+                Source = "Database",
+                Status = string.Join(" · ", statusParts),
+                StatusBrush = brush,
+                StatusFontWeight = weight
+            });
+        }
+
+        return result;
+    }
+
+    private void AllowSelectedPlugin_Click(object sender, RoutedEventArgs e)
+    {
+        if (InstalledPluginsListView.SelectedItem is not InstalledPluginViewModel selected)
+        {
+            MessageBox.Show("Please select a mod to allow on headless.", "Info", MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+
+            // Load the mod and update its AllowOnHeadless flag
+            var mods = LoadModsFromDatabase(connection);
+            var modToUpdate = mods.FirstOrDefault(m => string.Equals(m.Name, selected.Name, StringComparison.OrdinalIgnoreCase));
+
+            if (modToUpdate == null)
+            {
+                // Mod not in database, create new entry
+                modToUpdate = new ModInfo
+                {
+                    Name = selected.Name,
+                    Version = selected.DbVersion,
+                    FileName = selected.Name + ".zip",
+                    IsFolderMod = false,
+                    AllowOnHeadless = true
+                };
+            }
+            else
+            {
+                modToUpdate.AllowOnHeadless = true;
+            }
+
+            UpsertModInDatabase(connection, modToUpdate);
+            RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
+            MessageBox.Show($"Mod \"{selected.Name}\" is now allowed on headless.", "Success",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to update mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 }
 
 public class ServerConfig
@@ -1855,5 +2068,16 @@ public class BootstrapConfig
 {
     public int Port { get; set; } = 25569;
     public string DatabaseFileName { get; set; } = "MainDatabase\\SPTCoffee.db";
+}
+
+public class InstalledPluginViewModel
+{
+    public string Name { get; set; } = string.Empty;
+    public string FileVersion { get; set; } = string.Empty;
+    public string DbVersion { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public System.Windows.Media.Brush StatusBrush { get; set; } = System.Windows.Media.Brushes.White;
+    public string StatusFontWeight { get; set; } = "Normal";
 }
 

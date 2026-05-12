@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sptServerManager="clr-namespace:SPTServerManager"
-        Title="SPT Server Manager" Height="530" Width="800"
+        Title="SPT Server Manager" Height="700" Width="830"
         ResizeMode="NoResize"
         Background="#1e1e1e" Foreground="White"
         WindowStyle="None">
@@ -101,6 +101,63 @@
                             <Button Content="Update Configs" Width="150" Margin="0,0,0,8"
                                     Click="UpdateConfigs_Click" Background="DarkOliveGreen"
                                     Name="UpdateConfigsButton"/>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <!-- Installed Plugins Tab -->
+                <TabItem Header="Installed Plugins">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <ListView x:Name="InstalledPluginsListView" Grid.Row="0"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Mod Name" Width="200" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="File Version" Width="90" DisplayMemberBinding="{Binding FileVersion}" />
+                                    <GridViewColumn Header="DB Version" Width="90" DisplayMemberBinding="{Binding DbVersion}" />
+                                    <GridViewColumn Header="Source" Width="120" DisplayMemberBinding="{Binding Source}" />
+                                    <GridViewColumn Header="Status" Width="230">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Status}"
+                                                           Foreground="{Binding StatusBrush}"
+                                                           FontWeight="{Binding StatusFontWeight}"
+                                                           VerticalAlignment="Center"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30">
+                            <Button Content="Refresh" Width="90"
+                                    Click="RefreshInstalledPlugins_Click" Background="DodgerBlue"/>
+                            <Button Content="Allow Selected" Width="120" Margin="5,0,0,0"
+                                    Click="AllowSelectedPlugin_Click" Background="DarkOliveGreen"
+                                    Name="AllowSelectedPluginButton"/>
+                            <Button Content="Update Selected" Width="130" Margin="5,0,0,0"
+                                    IsEnabled="False" Background="#555" Foreground="#999"
+                                    Name="UpdateSelectedPluginButton"/>
+                            <Button Content="Update All" Width="100" Margin="5,0,0,0"
+                                    IsEnabled="False" Background="#555" Foreground="#999"
+                                    Name="UpdateAllPluginsButton"/>
                         </StackPanel>
                     </Grid>
                 </TabItem>
