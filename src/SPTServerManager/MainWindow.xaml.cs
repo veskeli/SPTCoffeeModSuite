@@ -128,6 +128,9 @@ public partial class MainWindow : Window
         // Load mod list
         RefreshModListView();
 
+        // Load config list
+        RefreshConfigListView();
+
         // Load installed plugins list
         RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
 
@@ -1843,6 +1846,174 @@ ON CONFLICT(name) DO UPDATE SET
             MessageBox.Show("Failed to load admin configuration: " + ex.Message, "Error", MessageBoxButton.OK,
                 MessageBoxImage.Error);
             return;
+        }
+    }
+
+    // ──────────────────── Config management ────────────────────
+
+    private List<ConfigInfo> LoadConfigsFromDatabase(SqliteConnection connection)
+    {
+        var configs = new List<ConfigInfo>();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT file_name, last_modified_utc, is_enforced
+FROM configs ORDER BY file_name COLLATE NOCASE;";
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            var lastModifiedRaw = reader.GetString(1);
+            var parsed = DateTime.TryParse(lastModifiedRaw, out var parsedValue)
+                ? parsedValue
+                : DateTime.UtcNow;
+
+            configs.Add(new ConfigInfo
+            {
+                FileName = reader.GetString(0),
+                LastModified = DateTime.SpecifyKind(parsed, DateTimeKind.Utc),
+                IsEnforced = reader.GetInt32(2) == 1
+            });
+        }
+
+        return configs;
+    }
+
+    private static void UpsertConfigInDatabase(SqliteConnection connection, ConfigInfo config)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO configs(file_name, last_modified_utc, is_enforced, updated_utc)
+VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc)
+ON CONFLICT(file_name) DO UPDATE SET
+    last_modified_utc = excluded.last_modified_utc,
+    is_enforced = excluded.is_enforced,
+    updated_utc = excluded.updated_utc;";
+        command.Parameters.AddWithValue("$fileName", config.FileName);
+        command.Parameters.AddWithValue("$lastModifiedUtc", config.LastModified.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue("$isEnforced", config.IsEnforced ? 1 : 0);
+        command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    private static void DeleteConfigFromDatabase(SqliteConnection connection, string fileName)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM configs WHERE file_name = $fileName COLLATE NOCASE;";
+        command.Parameters.AddWithValue("$fileName", fileName);
+        command.ExecuteNonQuery();
+    }
+
+    private void RefreshConfigListView()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath)) return;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            ConfigListView.ItemsSource = LoadConfigsFromDatabase(connection);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to load config list: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RefreshConfigList_Click(object sender, RoutedEventArgs e) => RefreshConfigListView();
+
+    private void AddConfig_Click(object sender, RoutedEventArgs e)
+    {
+        var editWindow = new ConfigEditWindow();
+        if (editWindow.ShowDialog() != true) return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            UpsertConfigInDatabase(connection, editWindow.Result!);
+            RefreshConfigListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to save config: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void EditConfig_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConfigListView.SelectedItem is not ConfigInfo selected)
+        {
+            MessageBox.Show("Please select a config to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var originalFileName = selected.FileName;
+        var editWindow = new ConfigEditWindow(selected);
+        if (editWindow.ShowDialog() != true) return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            if (!string.Equals(originalFileName, editWindow.Result!.FileName, StringComparison.OrdinalIgnoreCase))
+            {
+                DeleteConfigFromDatabase(connection, originalFileName);
+            }
+
+            UpsertConfigInDatabase(connection, editWindow.Result);
+            RefreshConfigListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to save config: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveConfig_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConfigListView.SelectedItem is not ConfigInfo selected)
+        {
+            MessageBox.Show("Please select a config to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Remove config \"{selected.FileName}\" from the database?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            DeleteConfigFromDatabase(connection, selected.FileName);
+            RefreshConfigListView();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to remove config: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

@@ -219,9 +219,56 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
+                        <ListView x:Name="ConfigListView" Grid.Row="0"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="File Name" Width="320" DisplayMemberBinding="{Binding FileName}" />
+                                    <GridViewColumn Header="Last Modified (UTC)" Width="220" DisplayMemberBinding="{Binding LastModified}" />
+                                    <GridViewColumn Header="Enforced" Width="90">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock HorizontalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="False"/>
+                                                            <Setter Property="Foreground" Value="Tomato"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsEnforced}" Value="True">
+                                                                    <Setter Property="Text" Value="True"/>
+                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Left" Margin="0,0,0,4">
+                            <Button Content="Refresh Config List" Width="140" Click="RefreshConfigList_Click" Background="DodgerBlue"/>
+                            <Button Content="Add Config" Width="100" Margin="5,0,0,0" Click="AddConfig_Click" Background="DodgerBlue"/>
+                            <Button Content="Edit Selected" Width="110" Margin="5,0,0,0" Click="EditConfig_Click" Background="DodgerBlue"/>
+                            <Button Content="Remove Selected" Width="130" Margin="5,0,0,0" Click="RemoveConfig_Click" Background="DarkRed"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Height="30" HorizontalAlignment="Right">
                             <Button Content="Update Configs" Width="150" Margin="0,0,0,8"
                                     Click="UpdateConfigs_Click" Background="DarkOliveGreen"
                                     Name="UpdateConfigsButton"/>
