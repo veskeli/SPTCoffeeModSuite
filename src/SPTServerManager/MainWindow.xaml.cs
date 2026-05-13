@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
+using Microsoft.Win32;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.SignalR.Client;
 using System.Windows.Media;
@@ -3007,7 +3008,7 @@ ON CONFLICT(name) DO UPDATE SET
             targetVersion = "0.0.0";
 
         var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
-        var targetFileName = string.IsNullOrWhiteSpace(mod.FileName) ? (targetName + ".zip") : mod.FileName;
+        var targetFileName = EnsureServerModZipExistsForDatabase(targetName, mod.FileName);
 
         UpsertServerModInDatabase(connection, new ServerModInfo
         {
@@ -3015,6 +3016,31 @@ ON CONFLICT(name) DO UPDATE SET
             Version = targetVersion,
             FileName = targetFileName
         });
+    }
+
+    private string EnsureServerModZipExistsForDatabase(string modName, string? preferredFileName)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        var zipFolder = GetServerModZipFolder(_exeFolder);
+        Directory.CreateDirectory(zipFolder);
+
+        var fileName = string.IsNullOrWhiteSpace(preferredFileName) ? (modName + ".zip") : preferredFileName;
+        var zipPath = Path.Combine(zipFolder, fileName);
+        if (File.Exists(zipPath))
+            return fileName;
+
+        // Zip missing: rebuild from local server mod folder when available.
+        var localModFolder = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", modName);
+        if (Directory.Exists(localModFolder))
+        {
+            return ZipServerModFolder(modName, localModFolder);
+        }
+
+        throw new FileNotFoundException(
+            $"Server mod zip is required for database mod '{modName}', but no zip or local mod folder was found.",
+            zipPath);
     }
 
     private void UpsertLocalServerModFromPending(ServerModInfo mod, string fallbackName)
@@ -3183,6 +3209,101 @@ ON CONFLICT(name) DO UPDATE SET
         return true;
     }
 
+    private bool TryQueueServerChangeFromZip(ServerModViewModel selected, string pendingState, string oldVersion, out bool canceled)
+    {
+        canceled = false;
+
+        var picker = new OpenFileDialog
+        {
+            Title = $"Select server mod ZIP for '{selected.Name}'",
+            Filter = "ZIP files (*.zip)|*.zip|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+            FileName = selected.FileName
+        };
+
+        if (picker.ShowDialog() != true)
+        {
+            canceled = true;
+            return false;
+        }
+
+        var storedFileName = CopyServerModZipToStorage(picker.FileName);
+        var storedZipPath = Path.Combine(GetServerModZipFolder(_exeFolder!), storedFileName);
+        var newVersion = ExtractServerModVersionFromZip(storedZipPath);
+
+        var infoText =
+            $"Mod: {selected.Name}\n" +
+            $"Old DB Version: {selected.DbVersion}\n" +
+            $"Old Local Version: {selected.LocalVersion}\n" +
+            $"New Version (from ZIP): {newVersion}\n" +
+            $"ZIP File: {storedFileName}\n\n" +
+            "Queue this change?";
+
+        var confirm = MessageBox.Show(infoText, "Confirm Server Mod File", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return false;
+        }
+
+        _pendingServerChanges[selected.Name] = new ServerModInfo
+        {
+            Name = selected.Name,
+            Version = oldVersion,
+            NewVersion = newVersion,
+            FileName = storedFileName,
+            PendingChangeState = pendingState
+        };
+
+        return true;
+    }
+
+    private string CopyServerModZipToStorage(string sourceZipPath)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        var zipFolder = GetServerModZipFolder(_exeFolder);
+        Directory.CreateDirectory(zipFolder);
+
+        var fileName = Path.GetFileName(sourceZipPath);
+        var destinationZipPath = Path.Combine(zipFolder, fileName);
+
+        if (!string.Equals(sourceZipPath, destinationZipPath, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Copy(sourceZipPath, destinationZipPath, true);
+        }
+
+        return fileName;
+    }
+
+    private static string ExtractServerModVersionFromZip(string zipPath)
+    {
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            var packageJsonEntry = archive.Entries.FirstOrDefault(e =>
+                string.Equals(Path.GetFileName(e.FullName), "package.json", StringComparison.OrdinalIgnoreCase));
+
+            if (packageJsonEntry == null)
+                return "0.0.0";
+
+            using var stream = packageJsonEntry.Open();
+            using var reader = new StreamReader(stream);
+            using var doc = JsonDocument.Parse(reader.ReadToEnd());
+            if (doc.RootElement.TryGetProperty("version", out var vProp))
+            {
+                return vProp.GetString() ?? "0.0.0";
+            }
+        }
+        catch
+        {
+            // Fall through to default version if ZIP metadata cannot be parsed.
+        }
+
+        return "0.0.0";
+    }
+
     private static ServerModInfo BuildServerChangeFromDb(ServerModViewModel selected, string pendingState, string oldVersion)
     {
         return new ServerModInfo
@@ -3231,17 +3352,14 @@ ON CONFLICT(name) DO UPDATE SET
                     continue;
                 }
 
-                if (HasLocal(selected))
+                var oldVersion = selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion;
+                if (!TryQueueServerChangeFromZip(selected, ServerStateAddBoth, oldVersion, out var canceled))
                 {
-                    if (!TryQueueServerChangeFromLocal(selected, ServerStateAddBoth, selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion))
-                    {
-                        skipped++;
-                        continue;
-                    }
-                }
-                else
-                {
-                    _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateAddBoth, selected.LocalVersion == "-" ? string.Empty : selected.LocalVersion);
+                    if (canceled)
+                        return;
+
+                    skipped++;
+                    continue;
                 }
 
                 queued++;
@@ -3316,17 +3434,14 @@ ON CONFLICT(name) DO UPDATE SET
                     continue;
                 }
 
-                if (HasLocal(selected))
+                var oldVersion = selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion;
+                if (!TryQueueServerChangeFromZip(selected, ServerStateUpdateBoth, oldVersion, out var canceled))
                 {
-                    if (!TryQueueServerChangeFromLocal(selected, ServerStateUpdateBoth, selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion))
-                    {
-                        skipped++;
-                        continue;
-                    }
-                }
-                else
-                {
-                    _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateUpdateBoth, selected.LocalVersion == "-" ? string.Empty : selected.LocalVersion);
+                    if (canceled)
+                        return;
+
+                    skipped++;
+                    continue;
                 }
 
                 queued++;
