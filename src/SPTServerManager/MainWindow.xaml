@@ -51,6 +51,7 @@
                         </Grid.RowDefinitions>
 
                         <ListView x:Name="ModListView" Grid.Row="0" Background="#1e1e1e" Foreground="White"
+                                  SelectionMode="Extended"
                                   BorderBrush="#3c3c3c" Margin="0,0,0,8">
                             <ListView.Resources>
                                 <Style TargetType="GridViewColumnHeader">
@@ -235,6 +236,7 @@
                         </Grid.RowDefinitions>
 
                         <ListView x:Name="ConfigListView" Grid.Row="0"
+                                  SelectionMode="Extended"
                                   Background="#1e1e1e" Foreground="White"
                                   BorderBrush="#3c3c3c" Margin="0,0,0,8">
                             <ListView.Resources>
@@ -297,6 +299,7 @@
                         </Grid.RowDefinitions>
 
                         <ListView x:Name="InstalledPluginsListView" Grid.Row="0"
+                                  SelectionMode="Extended"
                                   Background="#1e1e1e" Foreground="White"
                                   BorderBrush="#3c3c3c" Margin="0,0,0,8">
                             <ListView.Resources>
@@ -345,11 +348,112 @@
                     </Grid>
                 </TabItem>
 
+                <!-- Server Mods Tab -->
+                <TabItem Header="Server Mods">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <ListView x:Name="ServerModsListView" Grid.Row="0"
+                                  SelectionMode="Extended"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Mod Name" Width="200" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="DB Version" Width="90" DisplayMemberBinding="{Binding DbVersion}" />
+                                    <GridViewColumn Header="Local Version" Width="100" DisplayMemberBinding="{Binding LocalVersion}" />
+                                    <GridViewColumn Header="File Name" Width="180" DisplayMemberBinding="{Binding FileName}" />
+                                    <GridViewColumn Header="Status" Width="170">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Status}"
+                                                           Foreground="{Binding StatusBrush}"
+                                                           FontWeight="{Binding StatusFontWeight}"
+                                                           VerticalAlignment="Center"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="State" Width="170">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="{Binding PendingStateLabel}"/>
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="add">
+                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="delete">
+                                                                    <Setter Property="Foreground" Value="Tomato"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="update">
+                                                                    <Setter Property="Foreground" Value="DeepSkyBlue"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="1" Orientation="Vertical">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <Button Content="Refresh" Width="90"
+                                        Click="RefreshServerMods_Click" Background="DodgerBlue"/>
+                                <Button Content="Add Mod" Width="100" Margin="5,0,0,0"
+                                        Click="AddServerMod_Click" Background="DarkGreen"/>
+                                <Button Content="Update Selected" Width="120" Margin="5,0,0,0"
+                                        Click="UpdateServerMod_Click" Background="DarkGreen"/>
+                                <Button Content="Remove Mod" Width="110" Margin="5,0,0,0"
+                                        Click="RemoveServerMod_Click" Background="DarkRed"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <Button Content="Add to Database" Width="130"
+                                        Click="AddServerModToDb_Click" Background="DodgerBlue"/>
+                                <Button Content="Update to DB" Width="120" Margin="5,0,0,0"
+                                        Click="UpdateServerModToDb_Click" Background="DodgerBlue"/>
+                                <Button Content="Remove DB" Width="110" Margin="5,0,0,0"
+                                        Click="RemoveServerModFromDb_Click" Background="DarkRed"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Add to Local" Width="110"
+                                        Click="AddServerModToLocal_Click" Background="DodgerBlue"/>
+                                <Button Content="Update Local" Width="110" Margin="5,0,0,0"
+                                        Click="UpdateServerModLocal_Click" Background="DodgerBlue"/>
+                                <Button Content="Remove Local" Width="110" Margin="5,0,0,0"
+                                        Click="RemoveServerModLocal_Click" Background="DarkRed"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
                 <!-- Admin Tab -->
                 <TabItem Header="Admin">
                     <Grid Margin="5">
                         <StackPanel>
-                            <ListView Name="AdminListView" Height="250" Background="#1e1e1e" Foreground="White" BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView Name="AdminListView" Height="250" SelectionMode="Extended" Background="#1e1e1e" Foreground="White" BorderBrush="#3c3c3c" Margin="0,0,0,8">
                                 <ListView.Resources>
                                     <Style TargetType="GridViewColumnHeader">
                                         <Setter Property="Background" Value="#232323"/>
@@ -389,6 +493,7 @@
                         </Grid.RowDefinitions>
 
                         <ListView x:Name="PendingChangesListView" Grid.Row="0"
+                                  SelectionMode="Extended"
                                   Background="#1e1e1e" Foreground="White"
                                   BorderBrush="#3c3c3c" Margin="0,0,0,8">
                             <ListView.Resources>
@@ -400,29 +505,45 @@
                             </ListView.Resources>
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="Mod Name" Width="200" DisplayMemberBinding="{Binding Name}" />
-                                    <GridViewColumn Header="Version" Width="90" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Mod Name" Width="180" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Type" Width="70">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding ModType}" HorizontalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding ModType}" Value="Server">
+                                                                    <Setter Property="Foreground" Value="Gold"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="Curr. Version" Width="90" DisplayMemberBinding="{Binding Version}" />
                                     <GridViewColumn Header="Change Type" Width="150">
                                         <GridViewColumn.CellTemplate>
                                             <DataTemplate>
                                                 <TextBlock HorizontalAlignment="Center">
                                                     <TextBlock.Style>
                                                         <Style TargetType="TextBlock">
-                                                            <Setter Property="Text" Value=""/>
+                                                            <Setter Property="Text" Value="{Binding PendingStateLabel}"/>
                                                             <Setter Property="Foreground" Value="White"/>
                                                             <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding PendingChangeState}" Value="add">
-                                                                    <Setter Property="Text" Value="Addition"/>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="add">
                                                                     <Setter Property="Foreground" Value="LimeGreen"/>
                                                                     <Setter Property="FontWeight" Value="Bold"/>
                                                                 </DataTrigger>
-                                                                <DataTrigger Binding="{Binding PendingChangeState}" Value="delete">
-                                                                    <Setter Property="Text" Value="Deletion"/>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="delete">
                                                                     <Setter Property="Foreground" Value="Tomato"/>
                                                                     <Setter Property="FontWeight" Value="Bold"/>
                                                                 </DataTrigger>
-                                                                <DataTrigger Binding="{Binding PendingChangeState}" Value="update">
-                                                                    <Setter Property="Text" Value="Update"/>
+                                                                <DataTrigger Binding="{Binding PendingStateKind}" Value="update">
                                                                     <Setter Property="Foreground" Value="DeepSkyBlue"/>
                                                                     <Setter Property="FontWeight" Value="Bold"/>
                                                                 </DataTrigger>

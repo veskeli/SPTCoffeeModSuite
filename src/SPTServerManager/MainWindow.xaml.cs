@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private HubConnection? _hubConnection;
 
     private readonly Dictionary<string, ModInfo> _pendingChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ServerModInfo> _pendingServerChanges = new(StringComparer.OrdinalIgnoreCase);
     private bool _restartServersIfUpdateStartedOnline;
     private bool _isInitializingRestartCheckbox = true;
 
@@ -65,6 +66,17 @@ public partial class MainWindow : Window
     private const string MainDatabaseFolderName = "MainDatabase";
     private const string SptUpdateFolderName = "SptUpdate";
     private const string ConfigFilesFolderName = "ConfigFiles";
+    private const string ServerModZipFolderName = "ServerModZips";
+    private const string UserBackupsFolderName = "UserBackups";
+    private const string ServerStateAddBoth = "add_both";
+    private const string ServerStateUpdateBoth = "update_both";
+    private const string ServerStateDeleteBoth = "delete_both";
+    private const string ServerStateAddDb = "add_db";
+    private const string ServerStateUpdateDb = "update_db";
+    private const string ServerStateDeleteDb = "delete_db";
+    private const string ServerStateAddLocal = "add_local";
+    private const string ServerStateUpdateLocal = "update_local";
+    private const string ServerStateDeleteLocal = "delete_local";
     private const string RestartServersAfterPendingUpdateSettingKey = "restart_servers_after_pending_update";
     private const int HeadlessAutoStartMaxAttempts = 3;
     private const int HeadlessStartupValidationSeconds = 10;
@@ -128,11 +140,19 @@ public partial class MainWindow : Window
         // Initial status update
         StatusTimer_Tick(this, EventArgs.Empty);
 
+        // Load pending changes from database first so other views can reflect queued states.
+        LoadPendingChangesFromDatabase();
+        LoadServerPendingChangesFromDatabase();
+        RefreshPendingChanges_Internal();
+
         // Load admin list
         RefreshAdminListView();
 
         // Load mod list
         RefreshModListView();
+
+        // Load server mods list
+        RefreshServerModsListView();
 
         // Load config list
         RefreshConfigListView();
@@ -140,8 +160,6 @@ public partial class MainWindow : Window
         // Load installed plugins list
         RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
 
-        // Load pending changes from database
-        LoadPendingChangesFromDatabase();
         RestartServersCheckBox.IsChecked = _restartServersIfUpdateStartedOnline;
         _isInitializingRestartCheckbox = false;
 
@@ -580,6 +598,23 @@ CREATE TABLE IF NOT EXISTS pending_changes (
     is_optional INTEGER NOT NULL DEFAULT 0,
     optional_default_state INTEGER NOT NULL DEFAULT 0,
     created_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS server_plugins (
+    name TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
+    version TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    updated_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS server_pending_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mod_name TEXT NOT NULL COLLATE NOCASE,
+    change_type TEXT NOT NULL,
+    old_version TEXT NOT NULL DEFAULT '',
+    new_version TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    created_utc TEXT NOT NULL
 );";
         command.ExecuteNonQuery();
     }
@@ -870,6 +905,8 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         Directory.CreateDirectory(GetMainDatabaseFolder(_exeFolder));
         Directory.CreateDirectory(GetSptUpdateFolder(_exeFolder));
         Directory.CreateDirectory(GetConfigFilesFolder(_exeFolder));
+        Directory.CreateDirectory(GetServerModZipFolder(_exeFolder));
+        Directory.CreateDirectory(GetUserBackupsFolder(_exeFolder));
     }
 
     private static string GetPluginZipFolder(string rootFolder) => Path.Combine(rootFolder, PluginZipFolderName);
@@ -877,6 +914,54 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     private static string GetMainDatabaseFolder(string rootFolder) => Path.Combine(rootFolder, MainDatabaseFolderName);
     private static string GetSptUpdateFolder(string rootFolder) => Path.Combine(rootFolder, SptUpdateFolderName);
     private static string GetConfigFilesFolder(string rootFolder) => Path.Combine(rootFolder, ConfigFilesFolderName);
+    private static string GetServerModZipFolder(string rootFolder) => Path.Combine(rootFolder, ServerModZipFolderName);
+    private static string GetUserBackupsFolder(string rootFolder) => Path.Combine(rootFolder, UserBackupsFolderName);
+
+    private string? BackupUserProfilesBeforeApplyChanges()
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        var profilesRoot = Path.Combine(Config.SptServerFolder, "SPT", "user", "profiles");
+        if (!Directory.Exists(profilesRoot))
+            return null;
+
+        var backupsRoot = GetUserBackupsFolder(_exeFolder);
+        Directory.CreateDirectory(backupsRoot);
+
+        var folderName = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+        var backupFolder = Path.Combine(backupsRoot, folderName);
+        var suffix = 1;
+        while (Directory.Exists(backupFolder))
+        {
+            backupFolder = Path.Combine(backupsRoot, $"{folderName}_{suffix}");
+            suffix++;
+        }
+
+        var targetProfilesFolder = Path.Combine(backupFolder, "profiles");
+        Directory.CreateDirectory(targetProfilesFolder);
+
+        foreach (var sourceFile in Directory.GetFiles(profilesRoot, "*", SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(profilesRoot, sourceFile);
+            if (relativePath.StartsWith("backups\\", StringComparison.OrdinalIgnoreCase)
+                || relativePath.StartsWith("backups/", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var destinationFile = Path.Combine(targetProfilesFolder, relativePath);
+            var destinationDir = Path.GetDirectoryName(destinationFile);
+            if (!string.IsNullOrWhiteSpace(destinationDir))
+            {
+                Directory.CreateDirectory(destinationDir);
+            }
+
+            File.Copy(sourceFile, destinationFile, true);
+        }
+
+        return backupFolder;
+    }
 
     private static void SaveManagerSettingsToDatabase(SqliteConnection connection, ServerConfig config)
     {
@@ -1762,11 +1847,14 @@ ON CONFLICT(name) DO UPDATE SET
 
     private void EditMod_Click(object sender, RoutedEventArgs e)
     {
-        if (ModListView.SelectedItem is not ModInfo selected)
+        var selectedMods = ModListView.SelectedItems.Cast<ModInfo>().ToList();
+        if (selectedMods.Count != 1)
         {
-            MessageBox.Show("Please select a mod to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select exactly one mod to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+
+        var selected = selectedMods[0];
 
         var editWindow = new ModEditWindow(selected);
         if (editWindow.ShowDialog() != true) return;
@@ -1809,24 +1897,29 @@ ON CONFLICT(name) DO UPDATE SET
 
     private void RemoveMod_Click(object sender, RoutedEventArgs e)
     {
-        if (ModListView.SelectedItem is not ModInfo selected)
+        var selectedMods = ModListView.SelectedItems.Cast<ModInfo>().ToList();
+        if (selectedMods.Count == 0)
         {
-            MessageBox.Show("Please select a mod to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select one or more mods to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (MessageBox.Show($"Mark mod \"{selected.Name}\" for deletion? This will be applied when you update changes.", "Confirm",
+        if (MessageBox.Show($"Mark {selectedMods.Count} selected mod(s) for deletion? This will be applied when you update changes.", "Confirm",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
         try
         {
-            selected.PendingChangeState = "delete";
-            _pendingChanges[selected.Name] = selected;
+            foreach (var selected in selectedMods)
+            {
+                selected.PendingChangeState = "delete";
+                _pendingChanges[selected.Name] = selected;
+            }
+
             RefreshModListView();
             RefreshPendingChanges_Internal();
             SavePendingChangesToDatabase();
-            MessageBox.Show($"Mod \"{selected.Name}\" marked for deletion.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show($"Queued {selectedMods.Count} mod(s) for deletion.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -1836,11 +1929,14 @@ ON CONFLICT(name) DO UPDATE SET
 
     private void UpdateSelectedMod_Click(object sender, RoutedEventArgs e)
     {
-        if (ModListView.SelectedItem is not ModInfo selected)
+        var selectedMods = ModListView.SelectedItems.Cast<ModInfo>().ToList();
+        if (selectedMods.Count != 1)
         {
-            MessageBox.Show("Please select a mod to update.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select exactly one mod to update.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+
+        var selected = selectedMods[0];
 
         var updateWindow = new UpdateModWindow(selected);
         if (updateWindow.ShowDialog() != true) return;
@@ -1916,12 +2012,16 @@ ON CONFLICT(name) DO UPDATE SET
     private void EditAdmin_Click(object sender, RoutedEventArgs e)
     {
         // Get selected admin
-        if (AdminListView.SelectedItem is not AdminConfig selectedAdmin)
+        var selectedAdmins = AdminListView.SelectedItems.Cast<AdminConfig>().ToList();
+        if (selectedAdmins.Count != 1)
         {
-            MessageBox.Show("Please select an admin to edit.", "Info", MessageBoxButton.OK,
+            MessageBox.Show("Please select exactly one admin to edit.", "Info", MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
+
+        var selectedAdmin = selectedAdmins[0];
+
         // Open edit window
         var editWindow = new AdminConfigWindow()
         {
@@ -1980,16 +2080,15 @@ ON CONFLICT(name) DO UPDATE SET
 
     private void RemoveAdmin_Click(object sender, RoutedEventArgs e)
     {
-        // Get selected admin
-        if (AdminListView.SelectedItem is not AdminConfig selectedAdmin)
+        var selectedAdmins = AdminListView.SelectedItems.Cast<AdminConfig>().ToList();
+        if (selectedAdmins.Count == 0)
         {
-            MessageBox.Show("Please select an admin to remove.", "Info", MessageBoxButton.OK,
+            MessageBox.Show("Please select one or more admins to remove.", "Info", MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
 
-        // Confirm removal
-        var result = MessageBox.Show($"Are you sure you want to remove admin: {selectedAdmin.Note}?", "Confirm",
+        var result = MessageBox.Show($"Are you sure you want to remove {selectedAdmins.Count} selected admin(s)?", "Confirm",
             MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (result != MessageBoxResult.Yes)
         {
@@ -2008,8 +2107,14 @@ ON CONFLICT(name) DO UPDATE SET
             connection.Open();
             EnsureSptCoffeeSchema(connection);
 
+            var selectedSecrets = new HashSet<string>(
+                selectedAdmins
+                    .Select(a => a.Secret)
+                    .Where(secret => !string.IsNullOrWhiteSpace(secret)),
+                StringComparer.OrdinalIgnoreCase);
+
             var adminList = LoadAdminsFromDatabase(connection);
-            adminList.RemoveAll(a => a.Secret == selectedAdmin.Secret);
+            adminList.RemoveAll(a => !string.IsNullOrWhiteSpace(a.Secret) && selectedSecrets.Contains(a.Secret));
             SaveAdminsToDatabase(connection, adminList);
 
             RefreshAdminListView();
@@ -2122,11 +2227,14 @@ ON CONFLICT(file_name) DO UPDATE SET
 
     private void EditConfig_Click(object sender, RoutedEventArgs e)
     {
-        if (ConfigListView.SelectedItem is not ConfigInfo selected)
+        var selectedConfigs = ConfigListView.SelectedItems.Cast<ConfigInfo>().ToList();
+        if (selectedConfigs.Count != 1)
         {
-            MessageBox.Show("Please select a config to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select exactly one config to edit.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+
+        var selected = selectedConfigs[0];
 
         var originalFileName = selected.FileName;
         var editWindow = new ConfigEditWindow(selected);
@@ -2160,13 +2268,14 @@ ON CONFLICT(file_name) DO UPDATE SET
 
     private void RemoveConfig_Click(object sender, RoutedEventArgs e)
     {
-        if (ConfigListView.SelectedItem is not ConfigInfo selected)
+        var selectedConfigs = ConfigListView.SelectedItems.Cast<ConfigInfo>().ToList();
+        if (selectedConfigs.Count == 0)
         {
-            MessageBox.Show("Please select a config to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select one or more configs to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (MessageBox.Show($"Remove config \"{selected.FileName}\" from the database?", "Confirm",
+        if (MessageBox.Show($"Remove {selectedConfigs.Count} selected config(s) from the database?", "Confirm",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
@@ -2181,7 +2290,18 @@ ON CONFLICT(file_name) DO UPDATE SET
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
-            DeleteConfigFromDatabase(connection, selected.FileName);
+
+            var selectedFileNames = selectedConfigs
+                .Select(c => c.FileName)
+                .Where(fileName => !string.IsNullOrWhiteSpace(fileName))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var fileName in selectedFileNames)
+            {
+                DeleteConfigFromDatabase(connection, fileName);
+            }
+
             RefreshConfigListView();
         }
         catch (Exception ex)
@@ -2348,9 +2468,10 @@ ON CONFLICT(file_name) DO UPDATE SET
 
     private void AllowSelectedPlugin_Click(object sender, RoutedEventArgs e)
     {
-        if (InstalledPluginsListView.SelectedItem is not InstalledPluginViewModel selected)
+        var selectedPlugins = InstalledPluginsListView.SelectedItems.Cast<InstalledPluginViewModel>().ToList();
+        if (selectedPlugins.Count == 0)
         {
-            MessageBox.Show("Please select a mod to allow on headless.", "Info", MessageBoxButton.OK,
+            MessageBox.Show("Please select one or more mods to allow on headless.", "Info", MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
@@ -2368,30 +2489,36 @@ ON CONFLICT(file_name) DO UPDATE SET
             EnsureSptCoffeeSchema(connection);
             MigratePluginsSchema(connection);
 
-            // Load the mod and update its AllowOnHeadless flag
+            // Load mods once and upsert all selected entries in one pass.
             var mods = LoadModsFromDatabase(connection);
-            var modToUpdate = mods.FirstOrDefault(m => string.Equals(m.Name, selected.Name, StringComparison.OrdinalIgnoreCase));
-
-            if (modToUpdate == null)
+            var upsertCount = 0;
+            foreach (var selected in selectedPlugins)
             {
-                // Mod not in database, create new entry
-                modToUpdate = new ModInfo
+                var modToUpdate = mods.FirstOrDefault(m => string.Equals(m.Name, selected.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (modToUpdate == null)
                 {
-                    Name = selected.Name,
-                    Version = selected.DbVersion,
-                    FileName = selected.Name + ".zip",
-                    IsFolderMod = false,
-                    AllowOnHeadless = true
-                };
-            }
-            else
-            {
-                modToUpdate.AllowOnHeadless = true;
+                    modToUpdate = new ModInfo
+                    {
+                        Name = selected.Name,
+                        Version = selected.DbVersion != "-" ? selected.DbVersion : selected.FileVersion,
+                        FileName = selected.Name + ".zip",
+                        IsFolderMod = false,
+                        AllowOnHeadless = true
+                    };
+                    mods.Add(modToUpdate);
+                }
+                else
+                {
+                    modToUpdate.AllowOnHeadless = true;
+                }
+
+                UpsertModInDatabase(connection, modToUpdate);
+                upsertCount++;
             }
 
-            UpsertModInDatabase(connection, modToUpdate);
             RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
-            MessageBox.Show($"Mod \"{selected.Name}\" is now allowed on headless.", "Success",
+            MessageBox.Show($"Updated {upsertCount} mod(s) to allow on headless.", "Success",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -2509,6 +2636,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             }
 
             tx.Commit();
+
+            // Keep server pending changes persisted together with client pending changes.
+            SaveServerPendingChangesToDatabase();
         }
         catch (Exception ex)
         {
@@ -2520,16 +2650,44 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
     {
         try
         {
-            var pendingList = _pendingChanges.Values.ToList();
-            PendingChangesListView.ItemsSource = pendingList;
-
-            // Update button state based on server status
+            PendingChangesListView.ItemsSource = BuildUnifiedPendingList();
             UpdatePendingChangesButtonState();
         }
         catch (Exception ex)
         {
             MessageBox.Show("Failed to refresh pending changes: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private List<PendingChangeEntry> BuildUnifiedPendingList()
+    {
+        var list = new List<PendingChangeEntry>();
+
+        foreach (var mod in _pendingChanges.Values)
+        {
+            list.Add(new PendingChangeEntry
+            {
+                Name = mod.Name,
+                ModType = "Client",
+                PendingChangeState = mod.PendingChangeState,
+                Version = mod.Version,
+                NewVersion = mod.NewVersion
+            });
+        }
+
+        foreach (var mod in _pendingServerChanges.Values)
+        {
+            list.Add(new PendingChangeEntry
+            {
+                Name = mod.Name,
+                ModType = "Server",
+                PendingChangeState = mod.PendingChangeState,
+                Version = mod.Version,
+                NewVersion = mod.NewVersion
+            });
+        }
+
+        return list;
     }
 
     private void RefreshPendingChanges_Click(object sender, RoutedEventArgs e)
@@ -2539,22 +2697,34 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
 
     private void RevertSelectedPendingChange_Click(object sender, RoutedEventArgs e)
     {
-        if (PendingChangesListView.SelectedItem is not ModInfo selected)
+        var selectedChanges = PendingChangesListView.SelectedItems.Cast<PendingChangeEntry>().ToList();
+        if (selectedChanges.Count == 0)
         {
-            MessageBox.Show("Please select a pending change to revert.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Please select one or more pending changes to revert.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        if (MessageBox.Show($"Revert pending change for mod \"{selected.Name}\"?", "Confirm Revert",
+        if (MessageBox.Show($"Revert {selectedChanges.Count} selected pending change(s)?", "Confirm Revert",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
         {
             return;
         }
 
-        _pendingChanges.Remove(selected.Name);
+        var revertedCount = 0;
+        foreach (var selected in selectedChanges)
+        {
+            if (selected.IsServerMod)
+                revertedCount += _pendingServerChanges.Remove(selected.Name) ? 1 : 0;
+            else
+                revertedCount += _pendingChanges.Remove(selected.Name) ? 1 : 0;
+        }
+
         SavePendingChangesToDatabase();
+        SaveServerPendingChangesToDatabase();
         RefreshModListView();
+        RefreshServerModsListView();
         RefreshPendingChanges_Internal();
+        MessageBox.Show($"Reverted {revertedCount} pending change(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void RestartServersCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -2576,7 +2746,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
         bool headlessClientRunning = IsProcessRunningRegex(@"^EscapeFromTarkov$");
 
         bool anyServerRunning = launcherRunning || sptServerRunning || headlessManagerRunning || headlessClientRunning;
-        bool hasPendingChanges = _pendingChanges.Count > 0;
+        bool hasPendingChanges = _pendingChanges.Count > 0 || _pendingServerChanges.Count > 0;
 
         if (!hasPendingChanges)
         {
@@ -2600,7 +2770,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
 
     private async void UpdatePendingChanges_Click(object sender, RoutedEventArgs e)
     {
-        if (_pendingChanges.Count == 0)
+        if (_pendingChanges.Count == 0 && _pendingServerChanges.Count == 0)
         {
             MessageBox.Show("No pending changes to apply.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -2641,6 +2811,8 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 return;
             }
 
+            var profileBackupPath = BackupUserProfilesBeforeApplyChanges();
+
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
@@ -2669,13 +2841,66 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 }
             }
 
+            // Apply server mod pending changes
+            foreach (var (name, mod) in _pendingServerChanges)
+            {
+                var state = mod.PendingChangeState?.Trim().ToLowerInvariant() ?? string.Empty;
+
+                switch (state)
+                {
+                    case ServerStateAddBoth:
+                    case ServerStateUpdateBoth:
+                        UpsertServerModFromPending(connection, mod, name);
+                        UpsertLocalServerModFromPending(mod, name);
+                        break;
+
+                    case ServerStateDeleteBoth:
+                        DeleteServerModFromDatabase(connection, name);
+                        RemoveLocalServerMod(name);
+                        break;
+
+                    case ServerStateAddDb:
+                    case ServerStateUpdateDb:
+                        UpsertServerModFromPending(connection, mod, name);
+                        break;
+
+                    case ServerStateDeleteDb:
+                        DeleteServerModFromDatabase(connection, name);
+                        break;
+
+                    case ServerStateAddLocal:
+                    case ServerStateUpdateLocal:
+                        UpsertLocalServerModFromPending(mod, name);
+                        break;
+
+                    case ServerStateDeleteLocal:
+                        RemoveLocalServerMod(name);
+                        break;
+
+                    // Backward-compatible old states
+                    case "add":
+                    case "update":
+                        UpsertServerModFromPending(connection, mod, name);
+                        break;
+                    case "delete":
+                        DeleteServerModFromDatabase(connection, name);
+                        break;
+                }
+            }
+
             // Clear pending changes
             _pendingChanges.Clear();
+            _pendingServerChanges.Clear();
             SavePendingChangesToDatabase();
+            SaveServerPendingChangesToDatabase();
 
-            MessageBox.Show("Pending changes applied successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            var successMessage = string.IsNullOrWhiteSpace(profileBackupPath)
+                ? "Pending changes applied successfully."
+                : $"Pending changes applied successfully.\nProfile backup: {profileBackupPath}";
+            MessageBox.Show(successMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
 
             RefreshModListView();
+            RefreshServerModsListView();
             RefreshPendingChanges_Internal();
 
             // Restart servers if option is checked and they were running
@@ -2688,6 +2913,755 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
         catch (Exception ex)
         {
             MessageBox.Show("Failed to apply pending changes: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    // ──────────────────── Server Mod DB helpers ────────────────────
+
+    private List<ServerModInfo> LoadServerModsFromDatabase(SqliteConnection connection)
+    {
+        var mods = new List<ServerModInfo>();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name, version, file_name FROM server_plugins ORDER BY name COLLATE NOCASE;";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            mods.Add(new ServerModInfo
+            {
+                Name = reader.GetString(0),
+                Version = reader.GetString(1),
+                FileName = reader.GetString(2)
+            });
+        }
+        return mods;
+    }
+
+    private void UpsertServerModInDatabase(SqliteConnection connection, ServerModInfo mod)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO server_plugins(name, version, file_name, updated_utc)
+VALUES($name, $version, $fileName, $updatedUtc)
+ON CONFLICT(name) DO UPDATE SET
+    version = excluded.version,
+    file_name = excluded.file_name,
+    updated_utc = excluded.updated_utc;";
+        command.Parameters.AddWithValue("$name", mod.Name);
+        command.Parameters.AddWithValue("$version", mod.Version);
+        command.Parameters.AddWithValue("$fileName", mod.FileName);
+        command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    private void DeleteServerModFromDatabase(SqliteConnection connection, string name)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM server_plugins WHERE name = $name COLLATE NOCASE;";
+        command.Parameters.AddWithValue("$name", name);
+        command.ExecuteNonQuery();
+    }
+
+    // ──────────────────── Server Mod scan ────────────────────
+
+    private string ExtractServerModVersion(string modFolderPath)
+    {
+        // Try package.json first (SPT server mods commonly use it)
+        var packageJsonPath = Path.Combine(modFolderPath, "package.json");
+        if (File.Exists(packageJsonPath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(packageJsonPath));
+                if (doc.RootElement.TryGetProperty("version", out var vProp))
+                    return vProp.GetString() ?? "0.0.0";
+            }
+            catch { /* fall through */ }
+        }
+
+        // Fall back to first DLL in folder
+        var dlls = Directory.GetFiles(modFolderPath, "*.dll", SearchOption.AllDirectories);
+        if (dlls.Length > 0)
+            return FileVersionInfo.GetVersionInfo(dlls[0]).FileVersion ?? "0.0.0";
+
+        return "0.0.0";
+    }
+
+    private string ZipServerModFolder(string modName, string modFolderPath)
+    {
+        if (_exeFolder == null) throw new InvalidOperationException("Exe folder not determined.");
+
+        var zipFolder = GetServerModZipFolder(_exeFolder);
+        Directory.CreateDirectory(zipFolder);
+
+        var zipPath = Path.Combine(zipFolder, modName + ".zip");
+        if (File.Exists(zipPath)) File.Delete(zipPath);
+
+        ZipFile.CreateFromDirectory(modFolderPath, zipPath);
+        return modName + ".zip";
+    }
+
+    private void UpsertServerModFromPending(SqliteConnection connection, ServerModInfo mod, string fallbackName)
+    {
+        var targetVersion = string.IsNullOrWhiteSpace(mod.NewVersion) ? mod.Version : mod.NewVersion!;
+        if (string.IsNullOrWhiteSpace(targetVersion))
+            targetVersion = "0.0.0";
+
+        var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
+        var targetFileName = string.IsNullOrWhiteSpace(mod.FileName) ? (targetName + ".zip") : mod.FileName;
+
+        UpsertServerModInDatabase(connection, new ServerModInfo
+        {
+            Name = targetName,
+            Version = targetVersion,
+            FileName = targetFileName
+        });
+    }
+
+    private void UpsertLocalServerModFromPending(ServerModInfo mod, string fallbackName)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
+        var zipFileName = string.IsNullOrWhiteSpace(mod.FileName) ? (targetName + ".zip") : mod.FileName;
+        var zipPath = Path.Combine(GetServerModZipFolder(_exeFolder), zipFileName);
+        if (!File.Exists(zipPath))
+            throw new FileNotFoundException($"Server mod zip not found: {zipPath}", zipPath);
+
+        var serverModsRoot = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
+        Directory.CreateDirectory(serverModsRoot);
+
+        var targetFolder = Path.Combine(serverModsRoot, targetName);
+        if (Directory.Exists(targetFolder))
+            Directory.Delete(targetFolder, true);
+
+        ZipFile.ExtractToDirectory(zipPath, targetFolder);
+    }
+
+    private void RemoveLocalServerMod(string modName)
+    {
+        var serverModsRoot = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
+        var targetFolder = Path.Combine(serverModsRoot, modName);
+        if (Directory.Exists(targetFolder))
+            Directory.Delete(targetFolder, true);
+    }
+
+    private void RefreshServerModsListView()
+    {
+        try
+        {
+            ServerModsListView.ItemsSource = ScanServerMods();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to scan server mods: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private List<ServerModViewModel> ScanServerMods()
+    {
+        var serverModsPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
+
+        // Load DB entries
+        var dbMods = new Dictionary<string, ServerModInfo>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_databasePath) && File.Exists(_databasePath))
+        {
+            try
+            {
+                using var conn = new SqliteConnection($"Data Source={_databasePath}");
+                conn.Open();
+                EnsureSptCoffeeSchema(conn);
+                foreach (var m in LoadServerModsFromDatabase(conn))
+                    dbMods[m.Name] = m;
+            }
+            catch { /* best-effort */ }
+        }
+
+        // Discover local mods
+        var discovered = new Dictionary<string, (string Version, string FolderPath)>(StringComparer.OrdinalIgnoreCase);
+        if (Directory.Exists(serverModsPath))
+        {
+            foreach (var modDir in Directory.GetDirectories(serverModsPath))
+            {
+                var name = Path.GetFileName(modDir);
+                var version = ExtractServerModVersion(modDir);
+                discovered[name] = (version, modDir);
+            }
+        }
+
+        var result = new List<ServerModViewModel>();
+
+        // Local mods
+        foreach (var (name, info) in discovered.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            dbMods.TryGetValue(name, out var dbEntry);
+            string dbVer = dbEntry?.Version ?? "-";
+            string localVer = info.Version;
+
+            string status;
+            Brush brush;
+            string weight = "Normal";
+
+            if (dbEntry == null)
+            {
+                status = "Not in database";
+                brush = Brushes.Gray;
+            }
+            else if (!string.Equals(localVer, dbVer, StringComparison.OrdinalIgnoreCase))
+            {
+                status = "Outdated";
+                brush = Brushes.Orange;
+                weight = "Bold";
+            }
+            else
+            {
+                status = "Up to date";
+                brush = Brushes.LimeGreen;
+            }
+
+            string pendingState = _pendingServerChanges.TryGetValue(name, out var pending) ? pending.PendingChangeState : string.Empty;
+
+            result.Add(new ServerModViewModel
+            {
+                Name = name,
+                LocalVersion = localVer,
+                DbVersion = dbVer,
+                FileName = dbEntry?.FileName ?? (name + ".zip"),
+                Status = status,
+                StatusBrush = brush,
+                StatusFontWeight = weight,
+                PendingChangeState = pendingState
+            });
+        }
+
+        // DB-only mods (not installed locally)
+        foreach (var (name, dbEntry) in dbMods.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (discovered.ContainsKey(name)) continue;
+
+            string pendingState = _pendingServerChanges.TryGetValue(name, out var pending) ? pending.PendingChangeState : string.Empty;
+
+            result.Add(new ServerModViewModel
+            {
+                Name = name,
+                LocalVersion = "-",
+                DbVersion = dbEntry.Version,
+                FileName = dbEntry.FileName,
+                Status = "Not installed locally",
+                StatusBrush = Brushes.Yellow,
+                StatusFontWeight = "Bold",
+                PendingChangeState = pendingState
+            });
+        }
+
+        return result;
+    }
+
+    // ──────────────────── Server Mod button handlers ────────────────────
+
+    private void RefreshServerMods_Click(object sender, RoutedEventArgs e) => RefreshServerModsListView();
+
+    private static bool HasLocal(ServerModViewModel mod) => !string.Equals(mod.LocalVersion, "-", StringComparison.OrdinalIgnoreCase);
+    private static bool HasDb(ServerModViewModel mod) => !string.Equals(mod.DbVersion, "-", StringComparison.OrdinalIgnoreCase);
+
+    private bool TryQueueServerChangeFromLocal(ServerModViewModel selected, string pendingState, string oldVersion)
+    {
+        var serverModsPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
+        var modFolderPath = Path.Combine(serverModsPath, selected.Name);
+        if (!Directory.Exists(modFolderPath))
+            return false;
+
+        var zipFileName = ZipServerModFolder(selected.Name, modFolderPath);
+        _pendingServerChanges[selected.Name] = new ServerModInfo
+        {
+            Name = selected.Name,
+            Version = oldVersion,
+            NewVersion = selected.LocalVersion,
+            FileName = zipFileName,
+            PendingChangeState = pendingState
+        };
+        return true;
+    }
+
+    private static ServerModInfo BuildServerChangeFromDb(ServerModViewModel selected, string pendingState, string oldVersion)
+    {
+        return new ServerModInfo
+        {
+            Name = selected.Name,
+            Version = oldVersion,
+            NewVersion = selected.DbVersion,
+            FileName = selected.FileName,
+            PendingChangeState = pendingState
+        };
+    }
+
+    private void CompleteQueueServerChanges(int queued, int skipped, string actionText, string noEligibleText)
+    {
+        if (queued == 0)
+        {
+            MessageBox.Show(noEligibleText, "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        SaveServerPendingChangesToDatabase();
+        RefreshServerModsListView();
+        RefreshPendingChanges_Internal();
+        MessageBox.Show($"Queued {queued} server mod(s) for {actionText}." + (skipped > 0 ? $" Skipped: {skipped}." : string.Empty), "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void AddServerMod_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to add.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasLocal(selected) && !HasDb(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (HasLocal(selected))
+                {
+                    if (!TryQueueServerChangeFromLocal(selected, ServerStateAddBoth, selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion))
+                    {
+                        skipped++;
+                        continue;
+                    }
+                }
+                else
+                {
+                    _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateAddBoth, selected.LocalVersion == "-" ? string.Empty : selected.LocalVersion);
+                }
+
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "add (database + local)", "No selected server mods were eligible to add.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod add: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void AddServerModToDb_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to add to the database.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (HasDb(selected) || !HasLocal(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!TryQueueServerChangeFromLocal(selected, ServerStateAddDb, selected.DbVersion == "-" ? string.Empty : selected.DbVersion))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "database addition", "No selected server mods were eligible to add to database (already in DB or not installed locally).");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod addition: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void UpdateServerMod_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to update.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasLocal(selected) && !HasDb(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (HasLocal(selected))
+                {
+                    if (!TryQueueServerChangeFromLocal(selected, ServerStateUpdateBoth, selected.DbVersion == "-" ? selected.LocalVersion : selected.DbVersion))
+                    {
+                        skipped++;
+                        continue;
+                    }
+                }
+                else
+                {
+                    _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateUpdateBoth, selected.LocalVersion == "-" ? string.Empty : selected.LocalVersion);
+                }
+
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "update (database + local)", "No selected server mods were eligible to update.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod update: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveServerMod_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Queue {selectedMods.Count} selected server mod(s) for removal from database and local install?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasLocal(selected) && !HasDb(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                _pendingServerChanges[selected.Name] = new ServerModInfo
+                {
+                    Name = selected.Name,
+                    Version = HasDb(selected) ? selected.DbVersion : selected.LocalVersion,
+                    FileName = selected.FileName,
+                    PendingChangeState = ServerStateDeleteBoth
+                };
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "removal (database + local)", "No selected server mods were eligible to remove.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod removal: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void UpdateServerModToDb_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to update in database.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasLocal(selected) || !HasDb(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!TryQueueServerChangeFromLocal(selected, ServerStateUpdateDb, selected.DbVersion))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "database update", "No selected server mods were eligible to update in database.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod DB update: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveServerModFromDb_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to remove from database.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Queue {selectedMods.Count} selected server mod(s) for removal from the database?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+            foreach (var selected in selectedMods)
+            {
+                if (!HasDb(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var pending = new ServerModInfo
+                {
+                    Name = selected.Name,
+                    Version = selected.DbVersion,
+                    FileName = selected.FileName,
+                    PendingChangeState = ServerStateDeleteDb
+                };
+                _pendingServerChanges[selected.Name] = pending;
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "database removal", "No selected server mods were found in database.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue server mod removal: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void AddServerModToLocal_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to add locally.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasDb(selected) || HasLocal(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateAddLocal, string.Empty);
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "local addition", "No selected server mods were eligible to add locally (must exist in DB and not be installed locally).");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue local add: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void UpdateServerModLocal_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to update locally.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasDb(selected) || !HasLocal(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (string.Equals(selected.LocalVersion, selected.DbVersion, StringComparison.OrdinalIgnoreCase))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                _pendingServerChanges[selected.Name] = BuildServerChangeFromDb(selected, ServerStateUpdateLocal, selected.LocalVersion);
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "local update", "No selected server mods were eligible to update locally.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue local update: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RemoveServerModLocal_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedMods = ServerModsListView.SelectedItems.Cast<ServerModViewModel>().ToList();
+        if (selectedMods.Count == 0)
+        {
+            MessageBox.Show("Please select one or more server mods to remove locally.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Queue {selectedMods.Count} selected server mod(s) for local removal?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            var queued = 0;
+            var skipped = 0;
+
+            foreach (var selected in selectedMods)
+            {
+                if (!HasLocal(selected))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                _pendingServerChanges[selected.Name] = new ServerModInfo
+                {
+                    Name = selected.Name,
+                    Version = selected.LocalVersion,
+                    FileName = selected.FileName,
+                    PendingChangeState = ServerStateDeleteLocal
+                };
+                queued++;
+            }
+
+            CompleteQueueServerChanges(queued, skipped, "local removal", "No selected server mods were installed locally.");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue local removal: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    // ──────────────────── Server Pending Changes persistence ────────────────────
+
+    private void LoadServerPendingChangesFromDatabase()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath)) return;
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            _pendingServerChanges.Clear();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+SELECT mod_name, change_type, old_version, new_version, file_name
+FROM server_pending_changes
+ORDER BY id;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var mod = new ServerModInfo
+                {
+                    Name = reader.GetString(0),
+                    PendingChangeState = reader.GetString(1),
+                    Version = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
+                    NewVersion = reader.IsDBNull(3) || string.IsNullOrEmpty(reader.GetString(3)) ? null : reader.GetString(3),
+                    FileName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+                };
+                _pendingServerChanges[mod.Name] = mod;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to load server pending changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void SaveServerPendingChangesToDatabase()
+    {
+        if (string.IsNullOrWhiteSpace(_databasePath)) return;
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            using var tx = connection.BeginTransaction();
+
+            using (var clearCmd = connection.CreateCommand())
+            {
+                clearCmd.Transaction = tx;
+                clearCmd.CommandText = "DELETE FROM server_pending_changes;";
+                clearCmd.ExecuteNonQuery();
+            }
+
+            foreach (var (name, mod) in _pendingServerChanges)
+            {
+                using var insertCmd = connection.CreateCommand();
+                insertCmd.Transaction = tx;
+                insertCmd.CommandText = @"
+INSERT INTO server_pending_changes(mod_name, change_type, old_version, new_version, file_name, created_utc)
+VALUES($modName, $changeType, $oldVersion, $newVersion, $fileName, $createdUtc);";
+                insertCmd.Parameters.AddWithValue("$modName", name);
+                insertCmd.Parameters.AddWithValue("$changeType", mod.PendingChangeState);
+                insertCmd.Parameters.AddWithValue("$oldVersion", mod.Version ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$newVersion", mod.NewVersion ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$fileName", mod.FileName ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$createdUtc", DateTime.UtcNow.ToString("O"));
+                insertCmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to save server pending changes: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 }
@@ -2715,5 +3689,70 @@ public class InstalledPluginViewModel
     public string Status { get; set; } = string.Empty;
     public System.Windows.Media.Brush StatusBrush { get; set; } = System.Windows.Media.Brushes.White;
     public string StatusFontWeight { get; set; } = "Normal";
+}
+
+public class ServerModViewModel
+{
+    public string Name { get; set; } = string.Empty;
+    public string DbVersion { get; set; } = string.Empty;
+    public string LocalVersion { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public System.Windows.Media.Brush StatusBrush { get; set; } = System.Windows.Media.Brushes.White;
+    public string StatusFontWeight { get; set; } = "Normal";
+    /// <summary>Pending state key (legacy: add/delete/update, new: *_both/*_db/*_local).</summary>
+    public string PendingChangeState { get; set; } = string.Empty;
+    public string PendingStateKind => PendingChangeState.StartsWith("add", StringComparison.OrdinalIgnoreCase) ? "add"
+        : PendingChangeState.StartsWith("delete", StringComparison.OrdinalIgnoreCase) ? "delete"
+        : PendingChangeState.StartsWith("update", StringComparison.OrdinalIgnoreCase) ? "update"
+        : string.Empty;
+    public string PendingStateLabel => PendingChangeState.ToLowerInvariant() switch
+    {
+        "add" => "Waiting for addition",
+        "update" => "Waiting for update",
+        "delete" => "Waiting for deletion",
+        "add_both" => "Waiting: add DB + local",
+        "update_both" => "Waiting: update DB + local",
+        "delete_both" => "Waiting: remove DB + local",
+        "add_db" => "Waiting: add to DB",
+        "update_db" => "Waiting: update DB",
+        "delete_db" => "Waiting: remove from DB",
+        "add_local" => "Waiting: add to local",
+        "update_local" => "Waiting: update local",
+        "delete_local" => "Waiting: remove from local",
+        _ => string.Empty
+    };
+}
+
+public class PendingChangeEntry
+{
+    public string Name { get; set; } = string.Empty;
+    /// <summary>"Client" or "Server"</summary>
+    public string ModType { get; set; } = "Client";
+    /// <summary>Pending state key (legacy add/delete/update, plus server *_both/*_db/*_local).</summary>
+    public string PendingChangeState { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string? NewVersion { get; set; }
+    public bool IsServerMod => string.Equals(ModType, "Server", StringComparison.OrdinalIgnoreCase);
+    public string PendingStateKind => PendingChangeState.StartsWith("add", StringComparison.OrdinalIgnoreCase) ? "add"
+        : PendingChangeState.StartsWith("delete", StringComparison.OrdinalIgnoreCase) ? "delete"
+        : PendingChangeState.StartsWith("update", StringComparison.OrdinalIgnoreCase) ? "update"
+        : string.Empty;
+    public string PendingStateLabel => PendingChangeState.ToLowerInvariant() switch
+    {
+        "add" => "Addition",
+        "update" => "Update",
+        "delete" => "Deletion",
+        "add_both" => "Add DB + local",
+        "update_both" => "Update DB + local",
+        "delete_both" => "Remove DB + local",
+        "add_db" => "Add to DB",
+        "update_db" => "Update DB",
+        "delete_db" => "Remove DB",
+        "add_local" => "Add to local",
+        "update_local" => "Update local",
+        "delete_local" => "Remove local",
+        _ => string.Empty
+    };
 }
 
