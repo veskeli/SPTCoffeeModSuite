@@ -578,10 +578,96 @@
                         <StackPanel Grid.Row="2" Orientation="Horizontal" Height="30" HorizontalAlignment="Left">
                             <Button Content="Refresh" Width="90"
                                     Click="RefreshPendingChanges_Click" Background="DodgerBlue"/>
+                            <Button Content="Temp Diagnostics" Width="130" Margin="5,0,0,0"
+                                    Click="ShowPendingTempDiagnostics_Click" Background="#555" Foreground="White"/>
                             <Button Content="Revert Selected" Width="130" Margin="5,0,0,0"
                                     Click="RevertSelectedPendingChange_Click" Background="DarkRed"/>
                             <Button x:Name="UpdateChangesButton" Content="Update Changes" Width="300" Margin="5,0,0,0"
                                     Click="UpdatePendingChanges_Click" Background="Green"/>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Players">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="190"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Active players:" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="PlayerPresenceCountText" Text="0" Margin="5,0,15,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Updated:" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="PlayerPresenceLastUpdatedText" Text="—" Margin="5,0,15,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Log:" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="PlayerPresenceLogFileText" Text="—" Margin="5,0,0,0" Width="420" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <ListView x:Name="PlayerPresenceListView" Grid.Row="1"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
+                                    <GridViewColumn Header="Last Seen Stamp" Width="180" DisplayMemberBinding="{Binding LastSeenStamp}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <ListView x:Name="PlayerPresenceEventsListView" Grid.Row="2"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Stamp" Width="180" DisplayMemberBinding="{Binding Stamp}" />
+                                    <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
+                                    <GridViewColumn Header="Event" Width="110">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock HorizontalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="Disconnected"/>
+                                                            <Setter Property="Foreground" Value="Tomato"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                                                    <Setter Property="Text" Value="Connected"/>
+                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="3" Orientation="Horizontal">
+                            <Button Content="Refresh Players" Width="130" Click="RefreshPlayerPresence_Click" Background="DodgerBlue"/>
+                            <TextBlock x:Name="PlayerPresenceStatusText" Text="Not loaded" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="Gray"/>
                         </StackPanel>
                     </Grid>
                 </TabItem>

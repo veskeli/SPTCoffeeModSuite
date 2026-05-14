@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _launcherButtonCooldownTimer = new();
     private readonly DispatcherTimer _sptServerButtonCooldownTimer = new();
     private readonly DispatcherTimer _headlessManagerButtonCooldownTimer = new();
+    private readonly DispatcherTimer _playerPresenceTimer = new();
 
     private bool _isHeadlessWaitingToBeStarted = false;
     private bool _isHeadlessAutoStartInProgress = false;
@@ -36,6 +37,12 @@ public partial class MainWindow : Window
     private bool _prevSptServerRunning = false;
     private bool _headlessRestartNotified = false;
     private CancellationTokenSource? _headlessAutoStartCts;
+    private bool _isPlayerPresenceRefreshInProgress = false;
+    private PlayerPresenceSnapshot _lastPlayerPresenceSnapshot = new();
+    private static readonly HttpClient PlayerPresenceHttpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(3)
+    };
 
     private HubConnection? _hubConnection;
 
@@ -44,7 +51,7 @@ public partial class MainWindow : Window
     private bool _restartServersIfUpdateStartedOnline;
     private bool _isInitializingRestartCheckbox = true;
 
-    private static string BaseUrl => "http://localhost:25569";
+    private string BaseUrl => $"http://localhost:{Config.Port}";
 
     private readonly List<string> _excludedMods = new List<string>
     {
@@ -69,6 +76,7 @@ public partial class MainWindow : Window
     private const string ConfigFilesFolderName = "ConfigFiles";
     private const string ServerModZipFolderName = "ServerModZips";
     private const string UserBackupsFolderName = "UserBackups";
+    private const string PendingTempFolderName = "PendingChangesTemp";
     private const string ServerStateAddBoth = "add_both";
     private const string ServerStateUpdateBoth = "update_both";
     private const string ServerStateDeleteBoth = "delete_both";
@@ -140,6 +148,12 @@ public partial class MainWindow : Window
         _statusTimer.Start();
         // Initial status update
         StatusTimer_Tick(this, EventArgs.Empty);
+
+        // Start player presence polling timer
+        _playerPresenceTimer.Interval = TimeSpan.FromSeconds(3);
+        _playerPresenceTimer.Tick += async (_, __) => await RefreshPlayerPresenceAsync();
+        _playerPresenceTimer.Start();
+        _ = RefreshPlayerPresenceAsync();
 
         // Load pending changes from database first so other views can reflect queued states.
         LoadPendingChangesFromDatabase();
@@ -908,6 +922,8 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         Directory.CreateDirectory(GetConfigFilesFolder(_exeFolder));
         Directory.CreateDirectory(GetServerModZipFolder(_exeFolder));
         Directory.CreateDirectory(GetUserBackupsFolder(_exeFolder));
+        Directory.CreateDirectory(GetPendingClientFilesFolder(_exeFolder));
+        Directory.CreateDirectory(GetPendingServerFilesFolder(_exeFolder));
     }
 
     private static string GetPluginZipFolder(string rootFolder) => Path.Combine(rootFolder, PluginZipFolderName);
@@ -917,6 +933,103 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     private static string GetConfigFilesFolder(string rootFolder) => Path.Combine(rootFolder, ConfigFilesFolderName);
     private static string GetServerModZipFolder(string rootFolder) => Path.Combine(rootFolder, ServerModZipFolderName);
     private static string GetUserBackupsFolder(string rootFolder) => Path.Combine(rootFolder, UserBackupsFolderName);
+    private static string GetPendingTempFolder(string rootFolder) => Path.Combine(rootFolder, PendingTempFolderName);
+    private static string GetPendingClientFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ClientFiles");
+    private static string GetPendingServerFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ServerFiles");
+
+    private string StagePendingFile(string sourcePath, string pendingFolder, string? preferredFileName = null)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            throw new FileNotFoundException($"Selected file not found: {sourcePath}", sourcePath);
+
+        Directory.CreateDirectory(pendingFolder);
+
+        var fileName = string.IsNullOrWhiteSpace(preferredFileName)
+            ? Path.GetFileName(sourcePath)
+            : preferredFileName!;
+
+        var stagedPath = Path.Combine(pendingFolder, fileName);
+        File.Copy(sourcePath, stagedPath, true);
+        return fileName;
+    }
+
+    private string StageClientPendingFile(string sourcePath, string? preferredFileName = null)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        return StagePendingFile(sourcePath, GetPendingClientFilesFolder(_exeFolder), preferredFileName);
+    }
+
+    private string StageServerPendingZip(string sourceZipPath, string? preferredFileName = null)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        return StagePendingFile(sourceZipPath, GetPendingServerFilesFolder(_exeFolder), preferredFileName);
+    }
+
+    private string ResolvePendingServerZipPath(string fileName)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        var pendingPath = Path.Combine(GetPendingServerFilesFolder(_exeFolder), fileName);
+        if (File.Exists(pendingPath))
+            return pendingPath;
+
+        var storagePath = Path.Combine(GetServerModZipFolder(_exeFolder), fileName);
+        if (File.Exists(storagePath))
+            return storagePath;
+
+        throw new FileNotFoundException($"Server mod zip not found in pending temp or storage: {fileName}", fileName);
+    }
+
+    private void EnsureClientPendingFileInStorage(ModInfo mod)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        if (string.IsNullOrWhiteSpace(mod.FileName))
+            return;
+
+        var storageFolder = GetPluginZipFolder(_exeFolder);
+        Directory.CreateDirectory(storageFolder);
+
+        var destinationPath = Path.Combine(storageFolder, mod.FileName);
+        if (File.Exists(destinationPath))
+            return;
+
+        var stagedPath = Path.Combine(GetPendingClientFilesFolder(_exeFolder), mod.FileName);
+        if (!File.Exists(stagedPath))
+            throw new FileNotFoundException($"Pending client mod file not found: {stagedPath}", stagedPath);
+
+        File.Copy(stagedPath, destinationPath, true);
+    }
+
+    private void RemoveStagedPendingFile(string? fileName, bool server)
+    {
+        if (_exeFolder == null || string.IsNullOrWhiteSpace(fileName))
+            return;
+
+        var folder = server ? GetPendingServerFilesFolder(_exeFolder) : GetPendingClientFilesFolder(_exeFolder);
+        var fullPath = Path.Combine(folder, fileName);
+        if (File.Exists(fullPath))
+            File.Delete(fullPath);
+    }
+
+    private void ClearPendingTempStorage()
+    {
+        if (_exeFolder == null)
+            return;
+
+        var pendingRoot = GetPendingTempFolder(_exeFolder);
+        if (Directory.Exists(pendingRoot))
+            Directory.Delete(pendingRoot, true);
+
+        Directory.CreateDirectory(GetPendingClientFilesFolder(_exeFolder));
+        Directory.CreateDirectory(GetPendingServerFilesFolder(_exeFolder));
+    }
 
     private string? BackupUserProfilesBeforeApplyChanges()
     {
@@ -1239,6 +1352,20 @@ ON CONFLICT(key) DO UPDATE SET
                     }
                 });
             }
+
+            if (!sptServerRunning)
+            {
+                UpdatePlayerPresenceView(new PlayerPresenceSnapshot
+                {
+                    LastUpdatedUtc = DateTime.UtcNow,
+                    IsServerRunning = false,
+                    StatusMessage = "SPT.Server is stopped. All players are disconnected.",
+                    LogFilePath = string.Empty,
+                    ActivePlayers = [],
+                    RecentEvents = [],
+                    ActiveCount = 0
+                });
+            }
             // Headless network notification
             if ((headlessClientRunning != _prevHeadlessRunning && !_headlessRestartNotified)
                 || _isHeadlessWaitingToBeStarted
@@ -1268,6 +1395,89 @@ ON CONFLICT(key) DO UPDATE SET
             }
         }
         catch { /* Ignore exceptions in status update */ }
+    }
+
+    private async Task RefreshPlayerPresenceAsync()
+    {
+        if (_isPlayerPresenceRefreshInProgress)
+        {
+            return;
+        }
+
+        _isPlayerPresenceRefreshInProgress = true;
+
+        try
+        {
+            var response = await PlayerPresenceHttpClient.GetAsync($"{BaseUrl}/api/spt/players");
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                UpdatePlayerPresenceView(new PlayerPresenceSnapshot
+                {
+                    LastUpdatedUtc = DateTime.UtcNow,
+                    Error = $"Player presence request failed ({(int)response.StatusCode} {response.ReasonPhrase})."
+                });
+                return;
+            }
+
+            var snapshot = JsonSerializer.Deserialize<PlayerPresenceSnapshot>(json) ?? new PlayerPresenceSnapshot();
+            UpdatePlayerPresenceView(snapshot);
+        }
+        catch (Exception ex)
+        {
+            UpdatePlayerPresenceView(new PlayerPresenceSnapshot
+            {
+                LastUpdatedUtc = DateTime.UtcNow,
+                Error = $"Player presence unavailable: {ex.Message}"
+            });
+        }
+        finally
+        {
+            _isPlayerPresenceRefreshInProgress = false;
+        }
+    }
+
+    private void UpdatePlayerPresenceView(PlayerPresenceSnapshot snapshot)
+    {
+        _lastPlayerPresenceSnapshot = snapshot;
+
+        if (PlayerPresenceCountText == null || PlayerPresenceListView == null || PlayerPresenceStatusText == null)
+        {
+            return;
+        }
+
+        PlayerPresenceCountText.Text = snapshot.ActiveCount.ToString();
+        PlayerPresenceLastUpdatedText.Text = snapshot.LastUpdatedUtc == default
+            ? "Not updated"
+            : snapshot.LastUpdatedUtc.ToLocalTime().ToString("g");
+        PlayerPresenceLogFileText.Text = string.IsNullOrWhiteSpace(snapshot.LogFilePath)
+            ? "No log file"
+            : snapshot.LogFilePath;
+
+        if (!string.IsNullOrWhiteSpace(snapshot.Error))
+        {
+            PlayerPresenceStatusText.Text = snapshot.Error;
+            PlayerPresenceStatusText.Foreground = Brushes.Tomato;
+        }
+        else if (!string.IsNullOrWhiteSpace(snapshot.StatusMessage))
+        {
+            PlayerPresenceStatusText.Text = snapshot.StatusMessage;
+            PlayerPresenceStatusText.Foreground = snapshot.IsServerRunning ? Brushes.LimeGreen : Brushes.Gold;
+        }
+        else
+        {
+            PlayerPresenceStatusText.Text = $"Tracking {snapshot.ActiveCount} player(s).";
+            PlayerPresenceStatusText.Foreground = Brushes.LimeGreen;
+        }
+
+        PlayerPresenceListView.ItemsSource = snapshot.ActivePlayers;
+        PlayerPresenceEventsListView.ItemsSource = snapshot.RecentEvents;
+    }
+
+    private async void RefreshPlayerPresence_Click(object sender, RoutedEventArgs e)
+    {
+        await RefreshPlayerPresenceAsync();
     }
 
     private void LauncherButtonCooldownTimer_Tick(object? sender, EventArgs e)
@@ -1833,6 +2043,10 @@ ON CONFLICT(name) DO UPDATE SET
         try
         {
             var newMod = editWindow.Result!;
+            if (!string.IsNullOrWhiteSpace(editWindow.SelectedFilePath))
+            {
+                newMod.FileName = StageClientPendingFile(editWindow.SelectedFilePath, newMod.FileName);
+            }
             newMod.PendingChangeState = "add";
             _pendingChanges[newMod.Name] = newMod;
 
@@ -1953,6 +2167,11 @@ ON CONFLICT(name) DO UPDATE SET
             {
                 MessageBox.Show("The new version is the same as the current version.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(updateWindow.SelectedFilePath))
+            {
+                updatedMod.FileName = StageClientPendingFile(updateWindow.SelectedFilePath, updatedMod.FileName);
             }
 
             // Mark as update pending
@@ -2704,6 +2923,95 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
         RefreshPendingChanges_Internal();
     }
 
+    private void ShowPendingTempDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            MessageBox.Show(BuildPendingTempDiagnosticsReport(), "Pending Temp Diagnostics", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to generate temp diagnostics: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private string BuildPendingTempDiagnosticsReport()
+    {
+        if (_exeFolder == null)
+            return "Executable folder not determined.";
+
+        var pendingRoot = GetPendingTempFolder(_exeFolder);
+        var pendingClientFolder = GetPendingClientFilesFolder(_exeFolder);
+        var pendingServerFolder = GetPendingServerFilesFolder(_exeFolder);
+        var clientStorageFolder = GetPluginZipFolder(_exeFolder);
+        var serverStorageFolder = GetServerModZipFolder(_exeFolder);
+
+        var stagedClientFiles = Directory.Exists(pendingClientFolder)
+            ? Directory.GetFiles(pendingClientFolder, "*", SearchOption.TopDirectoryOnly)
+            : Array.Empty<string>();
+        var stagedServerFiles = Directory.Exists(pendingServerFolder)
+            ? Directory.GetFiles(pendingServerFolder, "*.zip", SearchOption.TopDirectoryOnly)
+            : Array.Empty<string>();
+
+        var missingClient = new List<string>();
+        foreach (var mod in _pendingChanges.Values.Where(m =>
+                     (string.Equals(m.PendingChangeState, "add", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(m.PendingChangeState, "update", StringComparison.OrdinalIgnoreCase))
+                     && !string.IsNullOrWhiteSpace(m.FileName)))
+        {
+            var inPending = File.Exists(Path.Combine(pendingClientFolder, mod.FileName));
+            var inStorage = File.Exists(Path.Combine(clientStorageFolder, mod.FileName));
+            if (!inPending && !inStorage)
+                missingClient.Add($"- {mod.Name} ({mod.FileName})");
+        }
+
+        bool NeedsServerPayload(string state)
+            => state.StartsWith("add", StringComparison.OrdinalIgnoreCase)
+               || state.StartsWith("update", StringComparison.OrdinalIgnoreCase);
+
+        var missingServer = new List<string>();
+        foreach (var mod in _pendingServerChanges.Values.Where(m =>
+                     NeedsServerPayload(m.PendingChangeState)
+                     && !string.IsNullOrWhiteSpace(m.FileName)))
+        {
+            var inPending = File.Exists(Path.Combine(pendingServerFolder, mod.FileName));
+            var inStorage = File.Exists(Path.Combine(serverStorageFolder, mod.FileName));
+            if (!inPending && !inStorage)
+                missingServer.Add($"- {mod.Name} ({mod.FileName})");
+        }
+
+        var report = new System.Text.StringBuilder();
+        report.AppendLine("Pending temp staging summary");
+        report.AppendLine($"Pending root: {pendingRoot}");
+        report.AppendLine();
+        report.AppendLine($"Client staged files: {stagedClientFiles.Length}");
+        report.AppendLine($"Server staged zips: {stagedServerFiles.Length}");
+        report.AppendLine($"Pending client entries: {_pendingChanges.Count}");
+        report.AppendLine($"Pending server entries: {_pendingServerChanges.Count}");
+        report.AppendLine();
+
+        report.AppendLine($"Missing client payloads: {missingClient.Count}");
+        if (missingClient.Count > 0)
+        {
+            foreach (var line in missingClient)
+                report.AppendLine(line);
+            report.AppendLine();
+        }
+
+        report.AppendLine($"Missing server payloads: {missingServer.Count}");
+        if (missingServer.Count > 0)
+        {
+            foreach (var line in missingServer)
+                report.AppendLine(line);
+            report.AppendLine();
+        }
+
+        if (missingClient.Count == 0 && missingServer.Count == 0)
+            report.AppendLine("All required pending payload files are available in temp or storage.");
+
+        return report.ToString().TrimEnd();
+    }
+
     private void RevertSelectedPendingChange_Click(object sender, RoutedEventArgs e)
     {
         var selectedChanges = PendingChangesListView.SelectedItems.Cast<PendingChangeEntry>().ToList();
@@ -2722,10 +3030,24 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
         var revertedCount = 0;
         foreach (var selected in selectedChanges)
         {
-            if (selected.IsServerMod)
-                revertedCount += _pendingServerChanges.Remove(selected.Name) ? 1 : 0;
-            else
-                revertedCount += _pendingChanges.Remove(selected.Name) ? 1 : 0;
+                if (selected.IsServerMod)
+                {
+                    if (_pendingServerChanges.TryGetValue(selected.Name, out var pendingServer)
+                        && _pendingServerChanges.Remove(selected.Name))
+                    {
+                        RemoveStagedPendingFile(pendingServer.FileName, server: true);
+                        revertedCount++;
+                    }
+                }
+                else
+                {
+                    if (_pendingChanges.TryGetValue(selected.Name, out var pendingClient)
+                        && _pendingChanges.Remove(selected.Name))
+                    {
+                        RemoveStagedPendingFile(pendingClient.FileName, server: false);
+                        revertedCount++;
+                    }
+                }
         }
 
         SavePendingChangesToDatabase();
@@ -2832,6 +3154,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             {
                 if (mod.PendingChangeState == "add")
                 {
+                    EnsureClientPendingFileInStorage(mod);
                     UpsertModInDatabase(connection, mod);
                 }
                 else if (mod.PendingChangeState == "delete")
@@ -2843,6 +3166,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                     // For update, just update the version and new version becomes the version
                     if (!string.IsNullOrWhiteSpace(mod.NewVersion))
                     {
+                        EnsureClientPendingFileInStorage(mod);
                         mod.Version = mod.NewVersion;
                         mod.NewVersion = null; // Clear the new version after applying
                         UpsertModInDatabase(connection, mod);
@@ -2902,6 +3226,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             _pendingServerChanges.Clear();
             SavePendingChangesToDatabase();
             SaveServerPendingChangesToDatabase();
+            ClearPendingTempStorage();
 
             var successMessage = string.IsNullOrWhiteSpace(profileBackupPath)
                 ? "Pending changes applied successfully."
@@ -3039,6 +3364,13 @@ ON CONFLICT(name) DO UPDATE SET
         if (File.Exists(zipPath))
             return fileName;
 
+        var pendingZipPath = Path.Combine(GetPendingServerFilesFolder(_exeFolder), fileName);
+        if (File.Exists(pendingZipPath))
+        {
+            File.Copy(pendingZipPath, zipPath, true);
+            return fileName;
+        }
+
         // Zip missing: rebuild from local server mod folder when available.
         var localModFolder = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", modName);
         if (Directory.Exists(localModFolder))
@@ -3058,18 +3390,30 @@ ON CONFLICT(name) DO UPDATE SET
 
         var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
         var zipFileName = string.IsNullOrWhiteSpace(mod.FileName) ? (targetName + ".zip") : mod.FileName;
-        var zipPath = Path.Combine(GetServerModZipFolder(_exeFolder), zipFileName);
-        if (!File.Exists(zipPath))
-            throw new FileNotFoundException($"Server mod zip not found: {zipPath}", zipPath);
+        var zipPath = ResolvePendingServerZipPath(zipFileName);
 
         var serverModsRoot = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
         Directory.CreateDirectory(serverModsRoot);
 
         var targetFolder = Path.Combine(serverModsRoot, targetName);
-        if (Directory.Exists(targetFolder))
-            Directory.Delete(targetFolder, true);
+        var tempExtractRoot = Path.Combine(GetPendingServerFilesFolder(_exeFolder), "_extract");
+        Directory.CreateDirectory(tempExtractRoot);
 
-        ZipFile.ExtractToDirectory(zipPath, targetFolder);
+        var tempTargetFolder = Path.Combine(tempExtractRoot, targetName + "_" + Guid.NewGuid().ToString("N"));
+        ZipFile.ExtractToDirectory(zipPath, tempTargetFolder);
+
+        var backupFolder = Path.Combine(tempExtractRoot, targetName + "_backup_" + Guid.NewGuid().ToString("N"));
+        if (Directory.Exists(targetFolder))
+        {
+            if (Directory.Exists(backupFolder))
+                Directory.Delete(backupFolder, true);
+            Directory.Move(targetFolder, backupFolder);
+        }
+
+        Directory.Move(tempTargetFolder, targetFolder);
+
+        if (Directory.Exists(backupFolder))
+            Directory.Delete(backupFolder, true);
     }
 
     private void RemoveLocalServerMod(string modName)
@@ -3331,7 +3675,7 @@ ON CONFLICT(name) DO UPDATE SET
             return null;
 
         var storedFileName = CopyServerModZipToStorage(zipPath);
-        var storedZipPath = Path.Combine(GetServerModZipFolder(_exeFolder!), storedFileName);
+        var storedZipPath = ResolvePendingServerZipPath(storedFileName);
         var serverVersion = string.IsNullOrWhiteSpace(bundle.ServerModVersion)
             ? ExtractServerModVersionFromZip(storedZipPath)
             : bundle.ServerModVersion!;
@@ -3401,7 +3745,7 @@ ON CONFLICT(name) DO UPDATE SET
 
         pendingClient.Name = bundle.ClientModName;
         pendingClient.IsFolderMod = isFolderMod;
-        pendingClient.FileName = Path.GetFileName(zipPath);
+        pendingClient.FileName = StageClientPendingFile(zipPath, Path.GetFileName(zipPath));
 
         if (string.Equals(clientPendingState, "update", StringComparison.OrdinalIgnoreCase) && existingClient != null)
         {
@@ -3493,7 +3837,7 @@ ON CONFLICT(name) DO UPDATE SET
         }
 
         var storedFileName = CopyServerModZipToStorage(picker.FileName);
-        var storedZipPath = Path.Combine(GetServerModZipFolder(_exeFolder!), storedFileName);
+        var storedZipPath = ResolvePendingServerZipPath(storedFileName);
         var newVersion = ExtractServerModVersionFromZip(storedZipPath);
 
         var infoText =
@@ -3534,18 +3878,8 @@ ON CONFLICT(name) DO UPDATE SET
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
 
-        var zipFolder = GetServerModZipFolder(_exeFolder);
-        Directory.CreateDirectory(zipFolder);
-
         var fileName = Path.GetFileName(sourceZipPath);
-        var destinationZipPath = Path.Combine(zipFolder, fileName);
-
-        if (!string.Equals(sourceZipPath, destinationZipPath, StringComparison.OrdinalIgnoreCase))
-        {
-            File.Copy(sourceZipPath, destinationZipPath, true);
-        }
-
-        return fileName;
+        return StageServerPendingZip(sourceZipPath, fileName);
     }
 
     private static string ExtractServerModVersionFromZip(string zipPath)

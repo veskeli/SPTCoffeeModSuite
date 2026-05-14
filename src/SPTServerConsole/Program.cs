@@ -437,6 +437,16 @@ app.MapGet("/api/status/spt-server", async context =>
     await context.Response.WriteAsync(running ? "true" : "false");
 });
 
+// GET /api/spt/players -> read the current SPT.Server logs and return active players plus recent connect/disconnect events
+app.MapGet("/api/spt/players", async context =>
+{
+    var runtimeSettings = SptCoffeeDb.ReadRuntimeSettings(sptCoffeeDbPath);
+    var snapshot = SptPlayerPresenceReader.BuildSnapshot(runtimeSettings.SptServerFolder);
+
+    context.Response.ContentType = "application/json";
+    await context.Response.WriteAsync(JsonSerializer.Serialize(snapshot));
+});
+
 // SignalR Hub registration
 app.MapHub<ServerHub>("/api/hub");
 
@@ -920,6 +930,255 @@ ON CONFLICT(key) DO UPDATE SET
         command.Parameters.AddWithValue("$value", value);
         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
+    }
+}
+
+public static class SptPlayerPresenceReader
+{
+    // Match `[WS] Player: ... has connected/disconnected` even when SPT adds timestamp/logger prefixes.
+    private static readonly Regex PlayerEventRegex = new(@"\[(?:WS|ws)\]\s*Player:\s*(?<name>.+?)\s*\((?<id>[^)]+)\)\s*(?<stamp>\d+)\s*has\s+(?<state>connected|disconnected)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly object PresenceSync = new();
+
+    private static string _cachedLogPath = string.Empty;
+    private static long _cachedOffset;
+    private static string _pendingLineFragment = string.Empty;
+    private static readonly Dictionary<string, PlayerPresenceInfo> CachedActivePlayers = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly List<PlayerPresenceEventInfo> CachedRecentEvents = [];
+    private const int MaxRecentEvents = 25;
+
+    public static PlayerPresenceSnapshot BuildSnapshot(string serverFolder)
+    {
+        var now = DateTime.UtcNow;
+        var isServerRunning = IsSptServerRunning();
+
+        if (string.IsNullOrWhiteSpace(serverFolder) || !Directory.Exists(serverFolder))
+        {
+            return new PlayerPresenceSnapshot
+            {
+                LastUpdatedUtc = now,
+                IsServerRunning = isServerRunning,
+                Error = string.IsNullOrWhiteSpace(serverFolder)
+                    ? "SPT server folder is not configured."
+                    : $"SPT server folder not found: {serverFolder}"
+            };
+        }
+
+        var logFile = FindLatestLogFile(serverFolder);
+        if (logFile == null)
+        {
+            return new PlayerPresenceSnapshot
+            {
+                LastUpdatedUtc = now,
+                IsServerRunning = isServerRunning,
+                Error = "No SPT.Server log file with player presence lines was found."
+            };
+        }
+
+        if (!isServerRunning)
+        {
+            ClearConnectedPlayers();
+
+            return new PlayerPresenceSnapshot
+            {
+                LogFilePath = logFile,
+                LogLastWriteUtc = File.GetLastWriteTimeUtc(logFile),
+                LastUpdatedUtc = now,
+                IsServerRunning = false,
+                StatusMessage = "SPT.Server is stopped. All players are disconnected.",
+                ActiveCount = 0,
+                ActivePlayers = [],
+                RecentEvents = []
+            };
+        }
+
+        TailAndParseLatestLog(logFile);
+
+        List<PlayerPresenceInfo> activePlayers;
+        List<PlayerPresenceEventInfo> recentEvents;
+
+        lock (PresenceSync)
+        {
+            activePlayers = CachedActivePlayers.Values
+                .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            recentEvents = CachedRecentEvents.ToList();
+        }
+
+        return new PlayerPresenceSnapshot
+        {
+            LogFilePath = logFile,
+            LogLastWriteUtc = File.GetLastWriteTimeUtc(logFile),
+            LastUpdatedUtc = now,
+            IsServerRunning = true,
+            StatusMessage = $"Tracking {activePlayers.Count} player(s).",
+            ActiveCount = activePlayers.Count,
+            ActivePlayers = activePlayers,
+            RecentEvents = recentEvents
+        };
+    }
+
+    private static string? FindLatestLogFile(string serverFolder)
+    {
+        var candidateDirectories = new[]
+        {
+            Path.Combine(serverFolder, "SPT", "user", "logs", "spt"),
+            Path.Combine(serverFolder, "SPT", "user", "logs"),
+            Path.Combine(serverFolder, "SPT", "Logs"),
+            Path.Combine(serverFolder, "SPT", "logs"),
+            Path.Combine(serverFolder, "user", "logs"),
+            Path.Combine(serverFolder, "user", "Logs"),
+            Path.Combine(serverFolder, "logs"),
+            Path.Combine(serverFolder, "Logs")
+        };
+
+        var files = new List<string>();
+
+        foreach (var directory in candidateDirectories)
+        {
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            files.AddRange(Directory.EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly));
+            files.AddRange(Directory.EnumerateFiles(directory, "*.txt", SearchOption.TopDirectoryOnly));
+        }
+
+        return files
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static bool IsSptServerRunning()
+    {
+        var regex = new Regex(@"^SPT\.Server$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        return Process.GetProcesses().Any(p =>
+        {
+            try
+            {
+                return regex.IsMatch(p.ProcessName);
+            }
+            catch
+            {
+                return false;
+            }
+        });
+    }
+
+    private static void TailAndParseLatestLog(string logFile)
+    {
+        lock (PresenceSync)
+        {
+            if (!string.Equals(_cachedLogPath, logFile, StringComparison.OrdinalIgnoreCase))
+            {
+                ResetCache(logFile);
+            }
+
+            using var stream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+            if (stream.Length < _cachedOffset)
+            {
+                // File rotated/truncated.
+                ResetCache(logFile);
+            }
+
+            stream.Seek(_cachedOffset, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            var chunk = reader.ReadToEnd();
+            _cachedOffset = stream.Length;
+
+            if (chunk.Length == 0)
+            {
+                return;
+            }
+
+            var pendingAndChunk = _pendingLineFragment + chunk;
+            var splitLines = pendingAndChunk.Split('\n');
+            var processCount = splitLines.Length;
+
+            if (!pendingAndChunk.EndsWith("\n", StringComparison.Ordinal))
+            {
+                _pendingLineFragment = splitLines[^1];
+                processCount--;
+            }
+            else
+            {
+                _pendingLineFragment = string.Empty;
+            }
+
+            for (var i = 0; i < processCount; i++)
+            {
+                ProcessLogLine(splitLines[i].TrimEnd('\r'));
+            }
+        }
+    }
+
+    private static void ProcessLogLine(string line)
+    {
+        if (!TryParsePlayerEvent(line, out var playerEvent))
+        {
+            return;
+        }
+
+        if (playerEvent.IsConnected)
+        {
+            CachedActivePlayers[playerEvent.AccountId] = new PlayerPresenceInfo
+            {
+                Name = playerEvent.Name,
+                AccountId = playerEvent.AccountId,
+                LastSeenStamp = playerEvent.Stamp
+            };
+        }
+        else
+        {
+            CachedActivePlayers.Remove(playerEvent.AccountId);
+        }
+
+        CachedRecentEvents.Add(playerEvent);
+        if (CachedRecentEvents.Count > MaxRecentEvents)
+        {
+            CachedRecentEvents.RemoveAt(0);
+        }
+    }
+
+    private static void ResetCache(string logFile)
+    {
+        _cachedLogPath = logFile;
+        _cachedOffset = 0;
+        _pendingLineFragment = string.Empty;
+        CachedActivePlayers.Clear();
+        CachedRecentEvents.Clear();
+    }
+
+    private static void ClearConnectedPlayers()
+    {
+        lock (PresenceSync)
+        {
+            CachedActivePlayers.Clear();
+            CachedRecentEvents.Clear();
+        }
+    }
+
+    private static bool TryParsePlayerEvent(string line, out PlayerPresenceEventInfo playerEvent)
+    {
+        var match = PlayerEventRegex.Match(line);
+        if (!match.Success)
+        {
+            playerEvent = null!;
+            return false;
+        }
+
+        playerEvent = new PlayerPresenceEventInfo
+        {
+            Name = match.Groups["name"].Value.Trim(),
+            AccountId = match.Groups["id"].Value.Trim(),
+            Stamp = match.Groups["stamp"].Value.Trim(),
+            IsConnected = string.Equals(match.Groups["state"].Value, "connected", StringComparison.OrdinalIgnoreCase)
+        };
+
+        return true;
     }
 }
 
