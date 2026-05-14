@@ -10,6 +10,7 @@ public partial class UpdateModWindow : Window
 {
     public ModInfo? Result { get; private set; }
     private string? _selectedFilePath;
+    public string? SelectedFilePath => _selectedFilePath;
 
     public UpdateModWindow(ModInfo mod)
     {
@@ -53,6 +54,7 @@ public partial class UpdateModWindow : Window
 
                 if (Result != null)
                 {
+                    Result.FileName = Path.GetFileName(_selectedFilePath);
                     Result.NewVersion = newVersion;
                 }
             }

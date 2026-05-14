@@ -1835,10 +1835,14 @@ ON CONFLICT(name) DO UPDATE SET
             var newMod = editWindow.Result!;
             newMod.PendingChangeState = "add";
             _pendingChanges[newMod.Name] = newMod;
+
+            var syncedServerMod = QueueServerPendingFromBundleZip(editWindow.SelectedFilePath, ServerStateAddBoth);
             RefreshModListView();
+            RefreshServerModsListView();
             RefreshPendingChanges_Internal();
             SavePendingChangesToDatabase();
-            MessageBox.Show($"Mod \"{newMod.Name}\" added to pending changes.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            var syncText = string.IsNullOrWhiteSpace(syncedServerMod) ? string.Empty : $"\nSynced server mod: {syncedServerMod}";
+            MessageBox.Show($"Mod \"{newMod.Name}\" added to pending changes.{syncText}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -1955,10 +1959,14 @@ ON CONFLICT(name) DO UPDATE SET
             updatedMod.PendingChangeState = "update";
             updatedMod.NewVersion = updateWindow.Result!.NewVersion;
             _pendingChanges[selected.Name] = updatedMod;
+
+            var syncedServerMod = QueueServerPendingFromBundleZip(updateWindow.SelectedFilePath, ServerStateUpdateBoth);
             RefreshModListView();
+            RefreshServerModsListView();
             RefreshPendingChanges_Internal();
             SavePendingChangesToDatabase();
-            MessageBox.Show($"Mod \"{selected.Name}\" marked for update (v{selected.Version} → v{updatedMod.NewVersion}).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            var syncText = string.IsNullOrWhiteSpace(syncedServerMod) ? string.Empty : $"\nSynced server mod: {syncedServerMod}";
+            MessageBox.Show($"Mod \"{selected.Name}\" marked for update (v{selected.Version} → v{updatedMod.NewVersion}).{syncText}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
@@ -3190,6 +3198,262 @@ ON CONFLICT(name) DO UPDATE SET
     private static bool HasLocal(ServerModViewModel mod) => !string.Equals(mod.LocalVersion, "-", StringComparison.OrdinalIgnoreCase);
     private static bool HasDb(ServerModViewModel mod) => !string.Equals(mod.DbVersion, "-", StringComparison.OrdinalIgnoreCase);
 
+    private sealed class BundleZipContents
+    {
+        public string? ClientModName { get; set; }
+        /// <summary>
+        /// True when the client mod is stored in a sub-folder under BepInEx/plugins (IsFolderMod).
+        /// False when the client mod is a DLL placed directly under BepInEx/plugins.
+        /// Null when no client mod was detected.
+        /// </summary>
+        public bool? IsClientFolderMod { get; set; }
+        public string? ServerModName { get; set; }
+        public string? ServerModVersion { get; set; }
+    }
+
+    private static BundleZipContents InspectBundleZip(string zipPath)
+    {
+        var result = new BundleZipContents();
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            foreach (var entry in archive.Entries)
+            {
+                var fullName = entry.FullName.Replace('\\', '/').Trim('/');
+                if (string.IsNullOrWhiteSpace(fullName))
+                    continue;
+
+                var segments = fullName.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length == 0)
+                    continue;
+
+                // Detect client mod under BepInEx/plugins
+                if (result.ClientModName == null && TryGetSegmentAfterPath(segments, "BepInEx", "plugins", out var clientSegment))
+                {
+                    // BepInEx/plugins/[clientSegment]/... → folder mod
+                    // BepInEx/plugins/[clientSegment.dll]   → single DLL, not folder mod
+                    bool isFolderMod = !clientSegment.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+                    result.ClientModName = isFolderMod ? clientSegment : Path.GetFileNameWithoutExtension(clientSegment);
+                    result.IsClientFolderMod = isFolderMod;
+                }
+
+                // Detect server mod under SPT/user/mods
+                if (result.ServerModName == null && TryGetSegmentAfterPath(segments, "SPT", "user", "mods", out var serverSegment))
+                {
+                    result.ServerModName = serverSegment;
+                }
+
+                if (result.ServerModName != null
+                    && result.ServerModVersion == null
+                    && TryGetSegmentAfterPath(segments, "SPT", "user", "mods", out var serverNameFromEntry)
+                    && string.Equals(serverNameFromEntry, result.ServerModName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(Path.GetFileName(fullName), "package.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.ServerModVersion = TryReadVersionFromPackageJson(entry);
+                }
+            }
+        }
+        catch
+        {
+            // Keep detection optional: callers should still proceed with regular add/update behavior.
+        }
+
+        return result;
+    }
+
+    private static bool TryGetSegmentAfterPath(string[] segments, string first, string second, out string value)
+    {
+        for (var i = 0; i <= segments.Length - 3; i++)
+        {
+            if (string.Equals(segments[i], first, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 1], second, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(segments[i + 2]))
+            {
+                value = segments[i + 2];
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetSegmentAfterPath(string[] segments, string first, string second, string third, out string value)
+    {
+        for (var i = 0; i <= segments.Length - 4; i++)
+        {
+            if (string.Equals(segments[i], first, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 1], second, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 2], third, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(segments[i + 3]))
+            {
+                value = segments[i + 3];
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static string? TryReadVersionFromPackageJson(ZipArchiveEntry entry)
+    {
+        try
+        {
+            using var stream = entry.Open();
+            using var reader = new StreamReader(stream);
+            using var doc = JsonDocument.Parse(reader.ReadToEnd());
+            if (doc.RootElement.TryGetProperty("version", out var versionProperty))
+            {
+                return versionProperty.GetString();
+            }
+        }
+        catch
+        {
+            // Ignore malformed package.json in bundle detection.
+        }
+
+        return null;
+    }
+
+    private string? QueueServerPendingFromBundleZip(string? zipPath, string serverPendingState)
+    {
+        if (string.IsNullOrWhiteSpace(zipPath)
+            || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(zipPath))
+        {
+            return null;
+        }
+
+        var bundle = InspectBundleZip(zipPath);
+        if (string.IsNullOrWhiteSpace(bundle.ServerModName))
+            return null;
+
+        var storedFileName = CopyServerModZipToStorage(zipPath);
+        var storedZipPath = Path.Combine(GetServerModZipFolder(_exeFolder!), storedFileName);
+        var serverVersion = string.IsNullOrWhiteSpace(bundle.ServerModVersion)
+            ? ExtractServerModVersionFromZip(storedZipPath)
+            : bundle.ServerModVersion!;
+
+        var oldVersion = GetCurrentServerVersionForPending(bundle.ServerModName);
+        _pendingServerChanges[bundle.ServerModName] = new ServerModInfo
+        {
+            Name = bundle.ServerModName,
+            Version = oldVersion,
+            NewVersion = serverVersion,
+            FileName = storedFileName,
+            PendingChangeState = serverPendingState
+        };
+
+        return bundle.ServerModName;
+    }
+
+    private string GetCurrentServerVersionForPending(string serverModName)
+    {
+        if (_pendingServerChanges.TryGetValue(serverModName, out var pendingServer))
+        {
+            return string.IsNullOrWhiteSpace(pendingServer.NewVersion)
+                ? pendingServer.Version
+                : pendingServer.NewVersion!;
+        }
+
+        if (ServerModsListView.ItemsSource is IEnumerable<ServerModViewModel> serverMods)
+        {
+            var existing = serverMods.FirstOrDefault(m => string.Equals(m.Name, serverModName, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                if (!string.Equals(existing.DbVersion, "-", StringComparison.OrdinalIgnoreCase))
+                    return existing.DbVersion;
+
+                if (!string.Equals(existing.LocalVersion, "-", StringComparison.OrdinalIgnoreCase))
+                    return existing.LocalVersion;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private void QueueClientPendingFromBundleZip(string zipPath, string clientPendingState)
+    {
+        if (string.IsNullOrWhiteSpace(zipPath)
+            || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(zipPath))
+        {
+            return;
+        }
+
+        var bundle = InspectBundleZip(zipPath);
+        if (string.IsNullOrWhiteSpace(bundle.ClientModName))
+            return;
+
+        var existingClient = TryGetCurrentClientMod(bundle.ClientModName);
+        var isFolderMod = bundle.IsClientFolderMod ?? true; // default true for ZIPs when uncertain
+        var pendingClient = existingClient ?? new ModInfo
+        {
+            Name = bundle.ClientModName,
+            Version = "custom",
+            IsFolderMod = isFolderMod,
+            AllowOnHeadless = false,
+            IsOptional = false,
+            OptionalDefaultState = false
+        };
+
+        pendingClient.Name = bundle.ClientModName;
+        pendingClient.IsFolderMod = isFolderMod;
+        pendingClient.FileName = Path.GetFileName(zipPath);
+
+        if (string.Equals(clientPendingState, "update", StringComparison.OrdinalIgnoreCase) && existingClient != null)
+        {
+            pendingClient.PendingChangeState = "update";
+            pendingClient.NewVersion = "custom";
+        }
+        else
+        {
+            pendingClient.PendingChangeState = "add";
+            pendingClient.NewVersion = null;
+            if (string.IsNullOrWhiteSpace(pendingClient.Version))
+                pendingClient.Version = "custom";
+        }
+
+        _pendingChanges[pendingClient.Name] = pendingClient;
+    }
+
+    private ModInfo? TryGetCurrentClientMod(string modName)
+    {
+        if (_pendingChanges.TryGetValue(modName, out var pending))
+        {
+            return CloneModInfo(pending);
+        }
+
+        if (ModListView.ItemsSource is IEnumerable<ModInfo> mods)
+        {
+            var existing = mods.FirstOrDefault(m => string.Equals(m.Name, modName, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                return CloneModInfo(existing);
+            }
+        }
+
+        return null;
+    }
+
+    private static ModInfo CloneModInfo(ModInfo source)
+    {
+        return new ModInfo
+        {
+            Name = source.Name,
+            Version = source.Version,
+            FileName = source.FileName,
+            IsFolderMod = source.IsFolderMod,
+            AllowOnHeadless = source.AllowOnHeadless,
+            IsOptional = source.IsOptional,
+            OptionalDefaultState = source.OptionalDefaultState,
+            PendingChangeState = source.PendingChangeState,
+            NewVersion = source.NewVersion
+        };
+    }
+
     private bool TryQueueServerChangeFromLocal(ServerModViewModel selected, string pendingState, string oldVersion)
     {
         var serverModsPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
@@ -3254,6 +3518,13 @@ ON CONFLICT(name) DO UPDATE SET
             FileName = storedFileName,
             PendingChangeState = pendingState
         };
+
+        var clientPendingState = string.Equals(pendingState, ServerStateUpdateBoth, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(pendingState, ServerStateUpdateDb, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(pendingState, ServerStateUpdateLocal, StringComparison.OrdinalIgnoreCase)
+            ? "update"
+            : "add";
+        QueueClientPendingFromBundleZip(picker.FileName, clientPendingState);
 
         return true;
     }
