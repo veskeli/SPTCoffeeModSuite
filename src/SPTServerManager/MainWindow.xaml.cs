@@ -2452,11 +2452,15 @@ ON CONFLICT(name) DO UPDATE SET
                     return;
                 }
 
-                QueueClientPendingFromBundleZip(selectedBackup.FilePath, "update", selectedBackup.Version);
+                QueueClientRevertFromArchivedBackup(selected, selectedBackup.FilePath, selectedBackup.Version);
                 SavePendingChangesToDatabase();
                 RefreshModListView();
                 RefreshPendingChanges_Internal();
-                MessageBox.Show($"Queued revert to archived version for '{selectedBackup.ModName}' ({selectedBackup.Version}).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(
+                    $"Queued revert for '{selectedBackup.ModName}': {selected.Version} -> {selectedBackup.Version}.",
+                    "Success",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
                 return;
             }
 
@@ -5541,6 +5545,39 @@ ON CONFLICT(name) DO UPDATE SET
         }
 
         _pendingChanges[pendingClient.Name] = pendingClient;
+    }
+
+    private void QueueClientRevertFromArchivedBackup(ModInfo currentMod, string backupFilePath, string backupVersion)
+    {
+        if (currentMod == null || string.IsNullOrWhiteSpace(currentMod.Name) || string.IsNullOrWhiteSpace(backupFilePath) || !File.Exists(backupFilePath))
+            return;
+
+        var existingClient = TryGetCurrentClientMod(currentMod.Name) ?? CloneModInfo(currentMod);
+        var pendingClient = existingClient ?? new ModInfo
+        {
+            Name = currentMod.Name,
+            Version = currentMod.Version,
+            FileName = string.Empty,
+            IsFolderMod = false,
+            AllowOnHeadless = false,
+            IsOptional = false,
+            OptionalDefaultState = false
+        };
+
+        pendingClient.Name = currentMod.Name;
+        pendingClient.Version = string.IsNullOrWhiteSpace(currentMod.Version) ? pendingClient.Version : currentMod.Version;
+        pendingClient.IsFolderMod = currentMod.IsFolderMod;
+        pendingClient.AllowOnHeadless = currentMod.AllowOnHeadless;
+        pendingClient.IsOptional = currentMod.IsOptional;
+        pendingClient.OptionalDefaultState = currentMod.OptionalDefaultState;
+        pendingClient.FileName = StageClientPendingFile(backupFilePath, currentMod.Name + ".zip");
+        pendingClient.PendingChangeState = "update";
+        pendingClient.NewVersion = NormalizeVersionForStorage(backupVersion, pendingClient.Version);
+
+        if (string.IsNullOrWhiteSpace(pendingClient.Version))
+            pendingClient.Version = NormalizeVersionForStorage(backupVersion, "0.0.0");
+
+        _pendingChanges[currentMod.Name] = pendingClient;
     }
 
     private ModInfo? TryGetCurrentClientMod(string modName)
