@@ -975,6 +975,36 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
 
+        if (sourcePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(preferredFileName))
+        {
+            var modName = Path.GetFileNameWithoutExtension(preferredFileName);
+            var scopedZipPath = CreateClientScopedZipForStorage(sourcePath, modName);
+            try
+            {
+                return StagePendingFile(scopedZipPath, GetPendingClientFilesFolder(_exeFolder), preferredFileName);
+            }
+            finally
+            {
+                CleanupTempWorkingFile(scopedZipPath);
+            }
+        }
+
+        if (sourcePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(preferredFileName)
+            && preferredFileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            var tempZipPath = CreateSingleFileZip(sourcePath, Path.GetFileName(sourcePath));
+            try
+            {
+                return StagePendingFile(tempZipPath, GetPendingClientFilesFolder(_exeFolder), preferredFileName);
+            }
+            finally
+            {
+                CleanupTempWorkingFile(tempZipPath);
+            }
+        }
+
         return StagePendingFile(sourcePath, GetPendingClientFilesFolder(_exeFolder), preferredFileName);
     }
 
@@ -982,6 +1012,21 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     {
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
+
+        if (sourceZipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(preferredFileName))
+        {
+            var modName = Path.GetFileNameWithoutExtension(preferredFileName);
+            var scopedZipPath = CreateServerScopedZipForStorage(sourceZipPath, modName);
+            try
+            {
+                return StagePendingFile(scopedZipPath, GetPendingServerFilesFolder(_exeFolder), preferredFileName);
+            }
+            finally
+            {
+                CleanupTempWorkingFile(scopedZipPath);
+            }
+        }
 
         return StagePendingFile(sourceZipPath, GetPendingServerFilesFolder(_exeFolder), preferredFileName);
     }
@@ -5162,6 +5207,139 @@ ON CONFLICT(name) DO UPDATE SET
     private static string NormalizeArchivePath(string path)
     {
         return path.Replace('\\', '/').Trim('/');
+    }
+
+    private static string CreateSingleFileZip(string sourceFilePath, string entryName)
+    {
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_single_{Guid.NewGuid():N}.zip");
+        using var archive = ZipFile.Open(tempZipPath, ZipArchiveMode.Create);
+        archive.CreateEntryFromFile(sourceFilePath, NormalizeArchivePath(entryName), CompressionLevel.Optimal);
+        return tempZipPath;
+    }
+
+    private static string CreateClientScopedZipForStorage(string sourceZipPath, string modName)
+    {
+        return CreateScopedZipForStorage(
+            sourceZipPath,
+            includeWhenRootMissing: true,
+            hasKnownRoot: normalizedPath =>
+            {
+                var parts = NormalizeArchivePath(normalizedPath).Split('/', StringSplitOptions.RemoveEmptyEntries);
+                return TryFindPathIndex(parts, "BepInEx", "plugins", out var pluginIndex)
+                       && pluginIndex + 2 < parts.Length;
+            },
+            mapRootedPath: normalizedPath =>
+            {
+                var parts = NormalizeArchivePath(normalizedPath).Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (!TryFindPathIndex(parts, "BepInEx", "plugins", out var pluginIndex) || pluginIndex + 2 >= parts.Length)
+                    return null;
+
+                var pluginSegment = parts[pluginIndex + 2];
+                var isDirectDll = pluginSegment.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+                if (isDirectDll)
+                {
+                    return string.Equals(Path.GetFileNameWithoutExtension(pluginSegment), modName, StringComparison.OrdinalIgnoreCase)
+                        ? pluginSegment
+                        : null;
+                }
+
+                if (!string.Equals(pluginSegment, modName, StringComparison.OrdinalIgnoreCase)
+                    || parts.Length <= pluginIndex + 3)
+                {
+                    return null;
+                }
+
+                return string.Join('/', parts.Skip(pluginIndex + 3));
+            });
+    }
+
+    private static string CreateServerScopedZipForStorage(string sourceZipPath, string modName)
+    {
+        return CreateScopedZipForStorage(
+            sourceZipPath,
+            includeWhenRootMissing: true,
+            hasKnownRoot: normalizedPath =>
+            {
+                var parts = NormalizeArchivePath(normalizedPath).Split('/', StringSplitOptions.RemoveEmptyEntries);
+                return TryFindPathIndex(parts, "SPT", "user", "mods", out var serverIndex)
+                       && serverIndex + 3 < parts.Length;
+            },
+            mapRootedPath: normalizedPath =>
+            {
+                var parts = NormalizeArchivePath(normalizedPath).Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (TryFindPathIndex(parts, "SPT", "user", "mods", out var serverIndex) && serverIndex + 3 < parts.Length)
+                {
+                    var serverSegment = parts[serverIndex + 3];
+                    if (!string.Equals(serverSegment, modName, StringComparison.OrdinalIgnoreCase)
+                        || parts.Length <= serverIndex + 4)
+                    {
+                        return null;
+                    }
+
+                    return string.Join('/', parts.Skip(serverIndex + 4));
+                }
+
+                if (parts.Length >= 2 && string.Equals(parts[0], modName, StringComparison.OrdinalIgnoreCase))
+                    return string.Join('/', parts.Skip(1));
+
+                return null;
+            });
+    }
+
+    private static string CreateScopedZipForStorage(
+        string sourceZipPath,
+        bool includeWhenRootMissing,
+        Func<string, bool> hasKnownRoot,
+        Func<string, string?> mapRootedPath)
+    {
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_scoped_{Guid.NewGuid():N}.zip");
+
+        using var sourceArchive = ZipFile.OpenRead(sourceZipPath);
+        var sourceEntries = sourceArchive.Entries
+            .Where(e => !string.IsNullOrWhiteSpace(e.FullName) && !e.FullName.EndsWith("/", StringComparison.Ordinal))
+            .ToList();
+
+        var archiveHasKnownRoot = sourceEntries.Any(e => hasKnownRoot(NormalizeArchivePath(e.FullName)));
+
+        using var targetArchive = ZipFile.Open(tempZipPath, ZipArchiveMode.Create);
+        var addedEntries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var includedCount = 0;
+
+        foreach (var sourceEntry in sourceEntries)
+        {
+            var normalizedSource = NormalizeArchivePath(sourceEntry.FullName);
+            if (string.IsNullOrWhiteSpace(normalizedSource))
+                continue;
+
+            string? targetRelativePath;
+            if (archiveHasKnownRoot)
+            {
+                targetRelativePath = mapRootedPath(normalizedSource);
+            }
+            else if (includeWhenRootMissing)
+            {
+                targetRelativePath = normalizedSource;
+            }
+            else
+            {
+                continue;
+            }
+
+            targetRelativePath = NormalizeArchivePath(targetRelativePath ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(targetRelativePath) || !addedEntries.Add(targetRelativePath))
+                continue;
+
+            var targetEntry = targetArchive.CreateEntry(targetRelativePath, CompressionLevel.Optimal);
+            using var sourceStream = sourceEntry.Open();
+            using var targetStream = targetEntry.Open();
+            sourceStream.CopyTo(targetStream);
+            includedCount++;
+        }
+
+        if (includedCount == 0)
+            throw new InvalidDataException("The selected archive does not contain files for the selected mod.");
+
+        return tempZipPath;
     }
 
     private static string ConvertArchiveToZipIfNeeded(string sourcePath, out string? tempZipPath)
