@@ -213,7 +213,6 @@
                             <Button Content="Refresh Mod List" Width="130" Click="RefreshModList_Click" Background="DodgerBlue"/>
                             <Button Content="Add Mod" Width="90" Margin="5,0,0,0" Click="AddMod_Click" Background="DodgerBlue"/>
                             <Button Content="Edit Selected" Width="110" Margin="5,0,0,0" Click="EditMod_Click" Background="DodgerBlue"/>
-                            <Button Content="Update Selected" Width="120" Margin="5,0,0,0" Click="UpdateSelectedMod_Click" Background="DarkGreen"/>
                             <Button Content="Remove Selected" Width="130" Margin="5,0,0,0" Click="RemoveMod_Click" Background="DarkRed"/>
                         </StackPanel>
 

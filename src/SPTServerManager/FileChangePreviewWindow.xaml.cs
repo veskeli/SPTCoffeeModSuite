@@ -5,10 +5,13 @@ namespace SPTServerManager;
 
 public partial class FileChangePreviewWindow : Window
 {
-    public bool KeepOldConfigFiles { get; private set; }
     public IReadOnlyCollection<string> ExcludedSourcePaths { get; private set; } = Array.Empty<string>();
     public string? SelectedPluginVersion { get; private set; }
     public string? SelectedServerVersion { get; private set; }
+    public bool SelectedPluginIsFolderMod { get; private set; }
+    public bool SelectedPluginAllowOnHeadless { get; private set; }
+    public bool SelectedPluginIsOptional { get; private set; }
+    public bool SelectedPluginOptionalDefaultState { get; private set; }
 
     private readonly IReadOnlyCollection<FileChangePreviewItem> _items;
     private readonly string _pluginAction;
@@ -26,6 +29,10 @@ public partial class FileChangePreviewWindow : Window
         string pluginAction,
         string? pluginOldVersion,
         string? pluginNewVersion,
+        bool pluginIsFolderMod,
+        bool pluginAllowOnHeadless,
+        bool pluginIsOptional,
+        bool pluginOptionalDefaultState,
         string serverAction,
         string? serverOldVersion,
         string? serverNewVersion)
@@ -38,7 +45,6 @@ public partial class FileChangePreviewWindow : Window
         _serverAction = serverAction;
         _serverOldVersion = serverOldVersion;
         FilesListView.ItemsSource = items;
-        KeepOldConfigFiles = false;
 
         ActionSummaryTextBlock.Text = actionSummary;
 
@@ -51,17 +57,21 @@ public partial class FileChangePreviewWindow : Window
         PluginVersionPanel.Visibility = string.Equals(pluginAction, "None", StringComparison.OrdinalIgnoreCase)
             ? Visibility.Collapsed
             : Visibility.Visible;
+        PluginFlagsPanel.Visibility = PluginVersionPanel.Visibility;
         ServerVersionPanel.Visibility = string.Equals(serverAction, "None", StringComparison.OrdinalIgnoreCase)
             ? Visibility.Collapsed
             : Visibility.Visible;
 
         PluginVersionBox.Text = FormatVersionForInput(pluginNewVersion);
         ServerVersionBox.Text = FormatVersionForInput(serverNewVersion);
+        PluginIsFolderModCheckBox.IsChecked = pluginIsFolderMod;
+        PluginAllowOnHeadlessCheckBox.IsChecked = pluginAllowOnHeadless;
+        PluginIsOptionalCheckBox.IsChecked = pluginIsOptional;
+        PluginOptionalDefaultStateCheckBox.IsChecked = pluginOptionalDefaultState;
 
         if (hasConfigConflicts)
         {
             ConfigWarningBorder.Visibility = Visibility.Visible;
-            KeepOldConfigButton.Visibility = Visibility.Visible;
         }
     }
 
@@ -71,22 +81,11 @@ public partial class FileChangePreviewWindow : Window
         Close();
     }
 
-    private void KeepOldConfig_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryCommitSelection())
-            return;
-
-        KeepOldConfigFiles = true;
-        DialogResult = true;
-        Close();
-    }
-
     private void ContinueOverride_Click(object sender, RoutedEventArgs e)
     {
         if (!TryCommitSelection())
             return;
 
-        KeepOldConfigFiles = false;
         DialogResult = true;
         Close();
     }
@@ -132,6 +131,33 @@ public partial class FileChangePreviewWindow : Window
         SelectedServerVersion = ServerVersionPanel.Visibility == Visibility.Visible
             ? NormalizeVersionInput(ServerVersionBox.Text)
             : null;
+
+        if (!string.Equals(_pluginAction, "None", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(SelectedPluginVersion))
+        {
+            MessageBox.Show(
+                "Plugin version is required. The ZIP must contain the plugin DLL version, or enter a custom value.",
+                "Plugin Version Missing",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (!string.Equals(_serverAction, "None", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(SelectedServerVersion))
+        {
+            MessageBox.Show(
+                "Server mod version is required. The ZIP must contain the server DLL version, or enter a custom value.",
+                "Server Version Missing",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        SelectedPluginIsFolderMod = PluginIsFolderModCheckBox.IsChecked == true;
+        SelectedPluginAllowOnHeadless = PluginAllowOnHeadlessCheckBox.IsChecked == true;
+        SelectedPluginIsOptional = PluginIsOptionalCheckBox.IsChecked == true;
+        SelectedPluginOptionalDefaultState = PluginOptionalDefaultStateCheckBox.IsChecked == true;
 
         if (!ConfirmSameVersionIfNeeded("Plugin", _pluginAction, _pluginOldVersion, SelectedPluginVersion))
             return false;

@@ -45,6 +45,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <StackPanel x:Name="PluginVersionPanel" Grid.Column="0" Margin="0,0,8,0">
@@ -55,6 +56,14 @@
             <StackPanel x:Name="ServerVersionPanel" Grid.Column="1" Margin="8,0,0,0">
                 <TextBlock Text="Server Mod New Version" Foreground="#f7d794" Margin="0,0,0,4"/>
                 <TextBox x:Name="ServerVersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
+            </StackPanel>
+
+            <StackPanel x:Name="PluginFlagsPanel" Grid.Column="2" Margin="8,0,0,0">
+                <TextBlock Text="Plugin Options" Foreground="#9ecbff" Margin="0,0,0,4"/>
+                <CheckBox x:Name="PluginIsFolderModCheckBox" Content="Is Folder Mod (from structure)" Foreground="White" IsEnabled="False"/>
+                <CheckBox x:Name="PluginAllowOnHeadlessCheckBox" Content="Allow On Headless" Foreground="White"/>
+                <CheckBox x:Name="PluginIsOptionalCheckBox" Content="Is Optional" Foreground="White"/>
+                <CheckBox x:Name="PluginOptionalDefaultStateCheckBox" Content="Optional Default State" Foreground="White"/>
             </StackPanel>
         </Grid>
 
@@ -105,13 +114,6 @@
             <Button Content="Select All" Width="95" Margin="0,0,8,0" Click="SelectAll_Click" Background="#3b82f6"/>
             <Button Content="Select None" Width="95" Margin="0,0,8,0" Click="SelectNone_Click" Background="#8b5cf6"/>
             <Button Content="Cancel" Width="95" Margin="0,0,8,0" Click="Cancel_Click" Background="#555"/>
-            <Button x:Name="KeepOldConfigButton"
-                    Content="Keep Old Config"
-                    Width="150"
-                    Margin="0,0,8,0"
-                    Visibility="Collapsed"
-                    Click="KeepOldConfig_Click"
-                    Background="#2d6a4f"/>
             <Button Content="Continue" Width="160" Click="ContinueOverride_Click" Background="DarkOliveGreen"/>
         </StackPanel>
     </Grid>

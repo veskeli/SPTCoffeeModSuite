@@ -33,8 +33,8 @@ public partial class UpdateModWindow : Window
     {
         var openFileDialog = new OpenFileDialog
         {
-            Title = "Select Mod File (DLL or ZIP)",
-            Filter = "DLL Files (*.dll)|*.dll|ZIP Files (*.zip)|*.zip|All Files (*.*)|*.*",
+            Title = "Select Mod File (DLL, ZIP or 7Z)",
+            Filter = "DLL Files (*.dll)|*.dll|ZIP Files (*.zip)|*.zip|7Z Files (*.7z)|*.7z|All Files (*.*)|*.*",
             InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop)
         };
 
@@ -75,9 +75,10 @@ public partial class UpdateModWindow : Window
             var fileVersionInfo = FileVersionInfo.GetVersionInfo(filePath);
             return fileVersionInfo.FileVersion ?? "0.0.0";
         }
-        else if (filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        else if (filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                 || filePath.EndsWith(".7z", StringComparison.OrdinalIgnoreCase))
         {
-            // For ZIP files, we can't extract version directly, so use file's modified date or just "unknown"
+            // For archive files, version is resolved later from contained DLLs in MainWindow flow.
             return "custom";
         }
         return "unknown";
