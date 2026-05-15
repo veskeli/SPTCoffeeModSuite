@@ -85,6 +85,8 @@ public partial class MainWindow : Window
     private const string ConfigFilesFolderName = "ConfigFiles";
     private const string ServerModZipFolderName = "ServerModZips";
     private const string UserBackupsFolderName = "UserBackups";
+    private const string TempFolderName = "Temp";
+    private const string OldPluginsFolderName = "OldPlugins";
     private const string PendingTempFolderName = "PendingChangesTemp";
     private const string ServerStateAddBoth = "add_both";
     private const string ServerStateUpdateBoth = "update_both";
@@ -934,6 +936,7 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         Directory.CreateDirectory(GetConfigFilesFolder(_exeFolder));
         Directory.CreateDirectory(GetServerModZipFolder(_exeFolder));
         Directory.CreateDirectory(GetUserBackupsFolder(_exeFolder));
+        Directory.CreateDirectory(GetOldPluginsFolder(_exeFolder));
         Directory.CreateDirectory(GetPendingClientFilesFolder(_exeFolder));
         Directory.CreateDirectory(GetPendingServerFilesFolder(_exeFolder));
     }
@@ -945,6 +948,8 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     private static string GetConfigFilesFolder(string rootFolder) => Path.Combine(rootFolder, ConfigFilesFolderName);
     private static string GetServerModZipFolder(string rootFolder) => Path.Combine(rootFolder, ServerModZipFolderName);
     private static string GetUserBackupsFolder(string rootFolder) => Path.Combine(rootFolder, UserBackupsFolderName);
+    private static string GetTempFolder(string rootFolder) => Path.Combine(rootFolder, TempFolderName);
+    private static string GetOldPluginsFolder(string rootFolder) => Path.Combine(GetTempFolder(rootFolder), OldPluginsFolderName);
     private static string GetPendingTempFolder(string rootFolder) => Path.Combine(rootFolder, PendingTempFolderName);
     private static string GetPendingClientFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ClientFiles");
     private static string GetPendingServerFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ServerFiles");
@@ -997,7 +1002,7 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         throw new FileNotFoundException($"Server mod zip not found in pending temp or storage: {fileName}", fileName);
     }
 
-    private void EnsureClientPendingFileInStorage(ModInfo mod)
+    private void EnsureClientPendingFileInStorage(ModInfo mod, bool overwriteExisting = false)
     {
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
@@ -1009,7 +1014,7 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         Directory.CreateDirectory(storageFolder);
 
         var destinationPath = Path.Combine(storageFolder, mod.FileName);
-        if (File.Exists(destinationPath))
+        if (File.Exists(destinationPath) && !overwriteExisting)
             return;
 
         var stagedPath = Path.Combine(GetPendingClientFilesFolder(_exeFolder), mod.FileName);
@@ -1017,6 +1022,81 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
             throw new FileNotFoundException($"Pending client mod file not found: {stagedPath}", stagedPath);
 
         File.Copy(stagedPath, destinationPath, true);
+    }
+
+    private static string SanitizePathSegment(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "unknown";
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var sanitized = new string(value.Trim().Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
+    }
+
+    private void ArchiveExistingClientMod(ModInfo existingMod)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        if (string.IsNullOrWhiteSpace(existingMod.FileName))
+            return;
+
+        var storagePath = Path.Combine(GetPluginZipFolder(_exeFolder), existingMod.FileName);
+        if (!File.Exists(storagePath))
+            return;
+
+        var modFolderName = SanitizePathSegment(existingMod.Name);
+        var versionFolderName = SanitizePathSegment(NormalizeVersionForStorage(existingMod.Version, "unknown"));
+        var archiveFolder = Path.Combine(GetOldPluginsFolder(_exeFolder), modFolderName, versionFolderName);
+        Directory.CreateDirectory(archiveFolder);
+
+        var fileName = Path.GetFileName(storagePath);
+        var destinationPath = Path.Combine(archiveFolder, fileName);
+        if (File.Exists(destinationPath))
+        {
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            var ext = Path.GetExtension(fileName);
+            destinationPath = Path.Combine(archiveFolder, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}{ext}");
+        }
+
+        File.Move(storagePath, destinationPath);
+    }
+
+    private List<OldPluginBackupEntry> LoadOldPluginBackups()
+    {
+        if (_exeFolder == null)
+            return new List<OldPluginBackupEntry>();
+
+        var root = GetOldPluginsFolder(_exeFolder);
+        if (!Directory.Exists(root))
+            return new List<OldPluginBackupEntry>();
+
+        var result = new List<OldPluginBackupEntry>();
+        foreach (var modDir in Directory.GetDirectories(root))
+        {
+            var modName = Path.GetFileName(modDir);
+            foreach (var versionDir in Directory.GetDirectories(modDir))
+            {
+                var version = Path.GetFileName(versionDir);
+                foreach (var filePath in Directory.GetFiles(versionDir, "*.zip", SearchOption.TopDirectoryOnly))
+                {
+                    result.Add(new OldPluginBackupEntry
+                    {
+                        ModName = modName,
+                        Version = version,
+                        FileName = Path.GetFileName(filePath),
+                        FilePath = filePath,
+                        ArchivedUtc = File.GetLastWriteTimeUtc(filePath)
+                    });
+                }
+            }
+        }
+
+        return result
+            .OrderByDescending(x => x.ArchivedUtc)
+            .ThenBy(x => x.ModName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private void RemoveStagedPendingFile(string? fileName, bool server)
@@ -2351,11 +2431,28 @@ ON CONFLICT(name) DO UPDATE SET
 
         var selected = selectedMods[0];
 
-        var editWindow = new ModEditWindow(selected);
+        var editWindow = new ModEditWindow(selected, LoadOldPluginBackups());
         if (editWindow.ShowDialog() != true) return;
 
         try
         {
+            if (editWindow.RequestedBackupRevert != null)
+            {
+                var selectedBackup = editWindow.RequestedBackupRevert;
+                if (!File.Exists(selectedBackup.FilePath))
+                {
+                    MessageBox.Show($"Archived file not found: {selectedBackup.FilePath}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                QueueClientPendingFromBundleZip(selectedBackup.FilePath, "update", selectedBackup.Version);
+                SavePendingChangesToDatabase();
+                RefreshModListView();
+                RefreshPendingChanges_Internal();
+                MessageBox.Show($"Queued revert to archived version for '{selectedBackup.ModName}' ({selectedBackup.Version}).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             var updatedMod = editWindow.Result!;
 
             // If the mod has a pending change state, preserve it
@@ -3751,6 +3848,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             MigratePluginsSchema(connection);
 
             // Apply all pending changes
+            var existingDbMods = LoadModsFromDatabase(connection)
+                .ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+
             foreach (var (name, mod) in _pendingChanges)
             {
                 if (mod.PendingChangeState == "add")
@@ -3761,6 +3861,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 }
                 else if (mod.PendingChangeState == "delete")
                 {
+                    if (existingDbMods.TryGetValue(name, out var existingDelete))
+                        ArchiveExistingClientMod(existingDelete);
+
                     DeleteModFromDatabase(connection, name);
                 }
                 else if (mod.PendingChangeState == "update")
@@ -3768,7 +3871,10 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                     // For update, just update the version and new version becomes the version
                     if (!string.IsNullOrWhiteSpace(mod.NewVersion))
                     {
-                        EnsureClientPendingFileInStorage(mod);
+                        if (existingDbMods.TryGetValue(name, out var existingUpdate))
+                            ArchiveExistingClientMod(existingUpdate);
+
+                        EnsureClientPendingFileInStorage(mod, overwriteExisting: true);
                         mod.Version = NormalizeVersionForStorage(mod.NewVersion, NormalizeVersionForStorage(mod.Version, "0.0.0"));
                         mod.NewVersion = null; // Clear the new version after applying
                         UpsertModInDatabase(connection, mod);

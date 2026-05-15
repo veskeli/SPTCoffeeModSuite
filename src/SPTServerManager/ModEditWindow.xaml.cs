@@ -1,17 +1,22 @@
-﻿using System.IO;
+using System.IO;
 using System.IO.Compression;
+using System.Collections.ObjectModel;
+using System.Linq;
 using System.Windows;
 using Microsoft.Win32;
 using SPTCoffee.Contracts.Models;
+using SPTServerManager.Models;
 
 namespace SPTServerManager;
 
 public partial class ModEditWindow : Window
 {
+    private readonly ObservableCollection<OldPluginBackupEntry> _oldBackups = new();
     public ModInfo? Result { get; private set; }
     public string? SelectedFilePath { get; private set; }
+    public OldPluginBackupEntry? RequestedBackupRevert { get; private set; }
 
-    public ModEditWindow(ModInfo? existing = null)
+    public ModEditWindow(ModInfo? existing = null, IEnumerable<OldPluginBackupEntry>? oldBackups = null)
     {
         InitializeComponent();
 
@@ -26,7 +31,89 @@ public partial class ModEditWindow : Window
             OptionalDefaultStateCheck.IsChecked = existing.OptionalDefaultState;
         }
 
+        if (oldBackups != null)
+        {
+            foreach (var backup in oldBackups)
+            {
+                _oldBackups.Add(backup);
+            }
+        }
+
+        OldModsListView.ItemsSource = _oldBackups;
         SelectedFilePathTextBlock.Text = "-";
+    }
+
+    private void RevertOldBackup_Click(object sender, RoutedEventArgs e)
+    {
+        if (OldModsListView.SelectedItem is not OldPluginBackupEntry selected)
+        {
+            MessageBox.Show("Please select one archived backup to queue for revert.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        RequestedBackupRevert = selected;
+        DialogResult = true;
+    }
+
+    private void RemoveOldBackups_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = OldModsListView.SelectedItems.Cast<OldPluginBackupEntry>().ToList();
+        if (selected.Count == 0)
+        {
+            MessageBox.Show("Please select one or more archived backups to remove.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Remove {selected.Count} archived backup(s)?", "Confirm", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        var removed = 0;
+        var failures = new List<string>();
+        foreach (var backup in selected)
+        {
+            try
+            {
+                if (File.Exists(backup.FilePath))
+                {
+                    File.Delete(backup.FilePath);
+                }
+
+                var versionFolder = Path.GetDirectoryName(backup.FilePath);
+                if (!string.IsNullOrWhiteSpace(versionFolder)
+                    && Directory.Exists(versionFolder)
+                    && !Directory.EnumerateFileSystemEntries(versionFolder).Any())
+                {
+                    Directory.Delete(versionFolder, false);
+                }
+
+                var modFolder = string.IsNullOrWhiteSpace(versionFolder) ? null : Path.GetDirectoryName(versionFolder);
+                if (!string.IsNullOrWhiteSpace(modFolder)
+                    && Directory.Exists(modFolder)
+                    && !Directory.EnumerateFileSystemEntries(modFolder).Any())
+                {
+                    Directory.Delete(modFolder, false);
+                }
+
+                _oldBackups.Remove(backup);
+                removed++;
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{backup.FileName}: {ex.Message}");
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            var details = string.Join("\n", failures.Take(5));
+            if (failures.Count > 5)
+                details += $"\n...and {failures.Count - 5} more.";
+
+            MessageBox.Show($"Removed {removed} backup(s). Failed: {failures.Count}.\n\n{details}", "Completed with errors", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        MessageBox.Show($"Removed {removed} archived backup(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void BrowseFile_Click(object sender, RoutedEventArgs e)
