@@ -57,4 +57,12 @@ public class PlayerPresenceSnapshot
 
     [JsonPropertyName("Error")]
     public string Error { get; set; } = string.Empty;
+
+    /// <summary>Current raid type: "None", "Solo", or "Headless".</summary>
+    [JsonPropertyName("CurrentRaidType")]
+    public string CurrentRaidType { get; set; } = "None";
+
+    /// <summary>Players detected in the current headless raid (from headless BepInEx log).</summary>
+    [JsonPropertyName("HeadlessRaidPlayers")]
+    public List<string> HeadlessRaidPlayers { get; set; } = [];
 }

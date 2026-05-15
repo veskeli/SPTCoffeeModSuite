@@ -602,28 +602,58 @@
                             <TextBlock x:Name="PlayerPresenceCountText" Text="0" Margin="5,0,15,0" VerticalAlignment="Center"/>
                             <TextBlock Text="Updated:" FontWeight="Bold" VerticalAlignment="Center"/>
                             <TextBlock x:Name="PlayerPresenceLastUpdatedText" Text="—" Margin="5,0,15,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Raid:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                            <TextBlock x:Name="RaidStatusText" Text="No Raid" Margin="0,0,15,0" VerticalAlignment="Center" Foreground="Gray"/>
                             <TextBlock Text="Log:" FontWeight="Bold" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="PlayerPresenceLogFileText" Text="—" Margin="5,0,0,0" Width="420" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="PlayerPresenceLogFileText" Text="—" Margin="5,0,0,0" Width="340" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                         </StackPanel>
 
-                        <ListView x:Name="PlayerPresenceListView" Grid.Row="1"
-                                  Background="#1e1e1e" Foreground="White"
-                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
-                            <ListView.Resources>
-                                <Style TargetType="GridViewColumnHeader">
-                                    <Setter Property="Background" Value="#232323"/>
-                                    <Setter Property="Foreground" Value="White"/>
-                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
-                                </Style>
-                            </ListView.Resources>
-                            <ListView.View>
-                                <GridView>
-                                    <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
-                                    <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
-                                    <GridViewColumn Header="Last Seen Stamp" Width="180" DisplayMemberBinding="{Binding LastSeenStamp}" />
-                                </GridView>
-                            </ListView.View>
-                        </ListView>
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <ListView x:Name="PlayerPresenceListView" Grid.Column="0"
+                                      Background="#1e1e1e" Foreground="White"
+                                      BorderBrush="#3c3c3c" Margin="0,0,8,8">
+                                <ListView.Resources>
+                                    <Style TargetType="GridViewColumnHeader">
+                                        <Setter Property="Background" Value="#232323"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                        <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                    </Style>
+                                </ListView.Resources>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
+                                        <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
+                                        <GridViewColumn Header="Last Seen Stamp" Width="180" DisplayMemberBinding="{Binding LastSeenStamp}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+
+                            <!-- Headless raid players panel (shown only during headless raids) -->
+                            <StackPanel x:Name="HeadlessRaidPlayersPanel" Grid.Column="1" Visibility="Collapsed" MinWidth="180">
+                                <TextBlock Text="Headless Raid Players" FontWeight="Bold" Foreground="DodgerBlue" Margin="0,0,0,4"/>
+                                <ListView x:Name="HeadlessRaidPlayersListView"
+                                          Background="#1e1e1e" Foreground="White"
+                                          BorderBrush="#3c3c3c" MinWidth="180">
+                                    <ListView.Resources>
+                                        <Style TargetType="GridViewColumnHeader">
+                                            <Setter Property="Background" Value="#232323"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                            <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                        </Style>
+                                    </ListView.Resources>
+                                    <ListView.View>
+                                        <GridView>
+                                            <GridViewColumn Header="Player" Width="160" DisplayMemberBinding="{Binding Name}" />
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                            </StackPanel>
+                        </Grid>
 
                         <ListView x:Name="PlayerPresenceEventsListView" Grid.Row="2"
                                   Background="#1e1e1e" Foreground="White"
@@ -678,6 +708,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
@@ -718,6 +749,20 @@
                             <TextBox Grid.Column="1" x:Name="SettingsAdditionalModsTextBox" Margin="0,0,5,0"/>
                             <Button Grid.Column="2" Content="Browse" Width="65" Margin="0,0,5,0" Click="BrowseSettingsAdditionalModsFolder_Click" Background="DodgerBlue"/>
                             <Button Grid.Column="3" Content="Open" Width="55" Click="OpenSettingsAdditionalModsFolder_Click" Background="DodgerBlue"/>
+                        </Grid>
+
+                        <Grid Grid.Row="3" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Label Grid.Column="0" Content="Headless Client Folder:" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" x:Name="SettingsHeadlessFolderTextBox" Margin="0,0,5,0"/>
+                            <Button Grid.Column="2" Content="Browse" Width="65" Margin="0,0,5,0" Click="BrowseSettingsHeadlessFolder_Click" Background="DodgerBlue"/>
+                            <Button Grid.Column="3" Content="Open" Width="55" Click="OpenSettingsHeadlessFolder_Click" Background="DodgerBlue"/>
                         </Grid>
 
                         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Left">

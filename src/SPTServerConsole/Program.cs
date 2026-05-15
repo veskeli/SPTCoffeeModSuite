@@ -441,7 +441,7 @@ app.MapGet("/api/status/spt-server", async context =>
 app.MapGet("/api/spt/players", async context =>
 {
     var runtimeSettings = SptCoffeeDb.ReadRuntimeSettings(sptCoffeeDbPath);
-    var snapshot = SptPlayerPresenceReader.BuildSnapshot(runtimeSettings.SptServerFolder);
+    var snapshot = SptPlayerPresenceReader.BuildSnapshot(runtimeSettings.SptServerFolder, runtimeSettings.HeadlessFolder);
 
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsync(JsonSerializer.Serialize(snapshot));
@@ -678,11 +678,13 @@ CREATE TABLE IF NOT EXISTS admins (
 
         var sptServerFolder = GetSetting(connection, "spt_server_folder");
         var additionalModsPath = GetSetting(connection, "additional_mods_path");
+        var headlessFolder = GetSetting(connection, "headless_folder");
 
         return new RuntimeSettings
         {
             SptServerFolder = string.IsNullOrWhiteSpace(sptServerFolder) ? @"C:\SPT" : sptServerFolder,
-            AdditionalModsPath = additionalModsPath ?? string.Empty
+            AdditionalModsPath = additionalModsPath ?? string.Empty,
+            HeadlessFolder = headlessFolder ?? string.Empty
         };
     }
 
@@ -937,6 +939,14 @@ public static class SptPlayerPresenceReader
 {
     // Match `[WS] Player: ... has connected/disconnected` even when SPT adds timestamp/logger prefixes.
     private static readonly Regex PlayerEventRegex = new(@"\[(?:WS|ws)\]\s*Player:\s*(?<name>.+?)\s*\((?<id>[^)]+)\)\s*(?<stamp>\d+)\s*has\s+(?<state>connected|disconnected)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Match raid start events in SPT server log
+    private static readonly Regex LocalStartRegex = new(@"\[Client Request\]\s*/client/match/local/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex HeadlessStartRegex = new(@"\[Client Request\]\s*/fika/raid/headless/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Match players joining headless raid from headless BepInEx log
+    private static readonly Regex HeadlessPlayerRegex = new(@"\[CoopHandler\]\s*AddClientToBotEnemies:\s*(?<name>.+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Match headless session end
+    private static readonly Regex HeadlessSessionEndRegex = new(@"Fika Server Session Statistics|NetManagerUtils\]\s*Destroyed FikaServer", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly object PresenceSync = new();
 
     private static string _cachedLogPath = string.Empty;
@@ -946,7 +956,16 @@ public static class SptPlayerPresenceReader
     private static readonly List<PlayerPresenceEventInfo> CachedRecentEvents = [];
     private const int MaxRecentEvents = 25;
 
-    public static PlayerPresenceSnapshot BuildSnapshot(string serverFolder)
+    // Raid tracking state
+    private static string _currentRaidType = "None"; // "None", "Solo", "Headless"
+
+    // Headless log tracking state
+    private static string _cachedHeadlessLogPath = string.Empty;
+    private static long _cachedHeadlessOffset;
+    private static string _pendingHeadlessFragment = string.Empty;
+    private static readonly HashSet<string> HeadlessRaidPlayers = new(StringComparer.OrdinalIgnoreCase);
+
+    public static PlayerPresenceSnapshot BuildSnapshot(string serverFolder, string headlessFolder = "")
     {
         var now = DateTime.UtcNow;
         var isServerRunning = IsSptServerRunning();
@@ -987,14 +1006,24 @@ public static class SptPlayerPresenceReader
                 StatusMessage = "SPT.Server is stopped. All players are disconnected.",
                 ActiveCount = 0,
                 ActivePlayers = [],
-                RecentEvents = []
+                RecentEvents = [],
+                CurrentRaidType = "None",
+                HeadlessRaidPlayers = []
             };
         }
 
         TailAndParseLatestLog(logFile);
 
+        // Tail headless log if headless folder is configured
+        if (!string.IsNullOrWhiteSpace(headlessFolder))
+        {
+            TailAndParseHeadlessLog(headlessFolder);
+        }
+
         List<PlayerPresenceInfo> activePlayers;
         List<PlayerPresenceEventInfo> recentEvents;
+        string raidType;
+        List<string> headlessPlayers;
 
         lock (PresenceSync)
         {
@@ -1002,6 +1031,8 @@ public static class SptPlayerPresenceReader
                 .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             recentEvents = CachedRecentEvents.ToList();
+            raidType = _currentRaidType;
+            headlessPlayers = HeadlessRaidPlayers.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         return new PlayerPresenceSnapshot
@@ -1013,7 +1044,9 @@ public static class SptPlayerPresenceReader
             StatusMessage = $"Tracking {activePlayers.Count} player(s).",
             ActiveCount = activePlayers.Count,
             ActivePlayers = activePlayers,
-            RecentEvents = recentEvents
+            RecentEvents = recentEvents,
+            CurrentRaidType = raidType,
+            HeadlessRaidPlayers = headlessPlayers
         };
     }
 
@@ -1115,8 +1148,91 @@ public static class SptPlayerPresenceReader
         }
     }
 
+    private static void TailAndParseHeadlessLog(string headlessFolder)
+    {
+        var headlessLogPath = Path.Combine(headlessFolder, "BepInEx", "LogOutput.log");
+        if (!File.Exists(headlessLogPath))
+        {
+            // Headless log doesn't exist - reset headless state
+            lock (PresenceSync)
+            {
+                if (HeadlessRaidPlayers.Count > 0 || !string.IsNullOrEmpty(_cachedHeadlessLogPath))
+                {
+                    ResetHeadlessCache();
+                }
+            }
+            return;
+        }
+
+        lock (PresenceSync)
+        {
+            // If the log file changed (different path or truncated = new session)
+            if (!string.Equals(_cachedHeadlessLogPath, headlessLogPath, StringComparison.OrdinalIgnoreCase))
+            {
+                ResetHeadlessCache();
+                _cachedHeadlessLogPath = headlessLogPath;
+            }
+
+            try
+            {
+                using var stream = new FileStream(headlessLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+                if (stream.Length < _cachedHeadlessOffset)
+                {
+                    // File was recreated (new headless session)
+                    ResetHeadlessCache();
+                    _cachedHeadlessLogPath = headlessLogPath;
+                }
+
+                stream.Seek(_cachedHeadlessOffset, SeekOrigin.Begin);
+                using var reader = new StreamReader(stream);
+                var chunk = reader.ReadToEnd();
+                _cachedHeadlessOffset = stream.Length;
+
+                if (chunk.Length == 0)
+                    return;
+
+                var pendingAndChunk = _pendingHeadlessFragment + chunk;
+                var splitLines = pendingAndChunk.Split('\n');
+                var processCount = splitLines.Length;
+
+                if (!pendingAndChunk.EndsWith("\n", StringComparison.Ordinal))
+                {
+                    _pendingHeadlessFragment = splitLines[^1];
+                    processCount--;
+                }
+                else
+                {
+                    _pendingHeadlessFragment = string.Empty;
+                }
+
+                for (var i = 0; i < processCount; i++)
+                {
+                    ProcessHeadlessLogLine(splitLines[i].TrimEnd('\r'));
+                }
+            }
+            catch
+            {
+                // Ignore file access errors
+            }
+        }
+    }
+
     private static void ProcessLogLine(string line)
     {
+        // Check for raid start events first
+        if (LocalStartRegex.IsMatch(line))
+        {
+            _currentRaidType = "Solo";
+            return;
+        }
+        if (HeadlessStartRegex.IsMatch(line))
+        {
+            _currentRaidType = "Headless";
+            HeadlessRaidPlayers.Clear();
+            return;
+        }
+
         if (!TryParsePlayerEvent(line, out var playerEvent))
         {
             return;
@@ -1134,12 +1250,38 @@ public static class SptPlayerPresenceReader
         else
         {
             CachedActivePlayers.Remove(playerEvent.AccountId);
+            // If no active players remain, reset raid type
+            if (CachedActivePlayers.Count == 0)
+            {
+                _currentRaidType = "None";
+            }
         }
 
         CachedRecentEvents.Add(playerEvent);
         if (CachedRecentEvents.Count > MaxRecentEvents)
         {
             CachedRecentEvents.RemoveAt(0);
+        }
+    }
+
+    private static void ProcessHeadlessLogLine(string line)
+    {
+        // Detect session end
+        if (HeadlessSessionEndRegex.IsMatch(line))
+        {
+            HeadlessRaidPlayers.Clear();
+            return;
+        }
+
+        // Detect player joining headless raid
+        var match = HeadlessPlayerRegex.Match(line);
+        if (match.Success)
+        {
+            var name = match.Groups["name"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                HeadlessRaidPlayers.Add(name);
+            }
         }
     }
 
@@ -1150,6 +1292,15 @@ public static class SptPlayerPresenceReader
         _pendingLineFragment = string.Empty;
         CachedActivePlayers.Clear();
         CachedRecentEvents.Clear();
+        _currentRaidType = "None";
+    }
+
+    private static void ResetHeadlessCache()
+    {
+        _cachedHeadlessLogPath = string.Empty;
+        _cachedHeadlessOffset = 0;
+        _pendingHeadlessFragment = string.Empty;
+        HeadlessRaidPlayers.Clear();
     }
 
     private static void ClearConnectedPlayers()
@@ -1158,6 +1309,8 @@ public static class SptPlayerPresenceReader
         {
             CachedActivePlayers.Clear();
             CachedRecentEvents.Clear();
+            _currentRaidType = "None";
+            HeadlessRaidPlayers.Clear();
         }
     }
 
@@ -1186,5 +1339,6 @@ public class RuntimeSettings
 {
     public string SptServerFolder { get; set; } = @"C:\SPT";
     public string AdditionalModsPath { get; set; } = string.Empty;
+    public string HeadlessFolder { get; set; } = string.Empty;
 }
 

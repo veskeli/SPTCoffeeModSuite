@@ -263,6 +263,7 @@ public partial class MainWindow : Window
                 var dbSettings = LoadManagerSettingsFromDatabase(connection);
                 Config.SptServerFolder = dbSettings.SptServerFolder;
                 Config.AdditionalModsPath = dbSettings.AdditionalModsPath;
+                Config.HeadlessFolder = LoadHeadlessFolderFromDatabase(connection);
             }
         }
         catch (System.Exception ex)
@@ -1081,6 +1082,7 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     {
         UpsertSetting(connection, "spt_server_folder", config.SptServerFolder);
         UpsertSetting(connection, "additional_mods_path", config.AdditionalModsPath);
+        UpsertSetting(connection, "headless_folder", config.HeadlessFolder);
     }
 
     private static void MigrateLegacySettingsToDatabase(SqliteConnection connection, ServerConfig legacy)
@@ -1178,6 +1180,11 @@ VALUES($note, $secret, $isEnabled, $allowHeadlessClose, $updatedUtc);";
         );
     }
 
+    private static string LoadHeadlessFolderFromDatabase(SqliteConnection connection)
+    {
+        return GetSetting(connection, "headless_folder") ?? string.Empty;
+    }
+
     private static string? GetSetting(SqliteConnection connection, string key)
     {
         using var command = connection.CreateCommand();
@@ -1207,6 +1214,7 @@ ON CONFLICT(key) DO UPDATE SET
         SettingsLauncherPortTextBox.Text = Config.Port.ToString();
         SettingsServerFolderTextBox.Text = Config.SptServerFolder;
         SettingsAdditionalModsTextBox.Text = Config.AdditionalModsPath;
+        SettingsHeadlessFolderTextBox.Text = Config.HeadlessFolder;
     }
 
     private void SaveSettingsTab_Click(object sender, RoutedEventArgs e)
@@ -1220,6 +1228,7 @@ ON CONFLICT(key) DO UPDATE SET
         Config.Port = port;
         Config.SptServerFolder = SettingsServerFolderTextBox.Text?.Trim() ?? string.Empty;
         Config.AdditionalModsPath = SettingsAdditionalModsTextBox.Text?.Trim() ?? string.Empty;
+        Config.HeadlessFolder = SettingsHeadlessFolderTextBox.Text?.Trim() ?? string.Empty;
 
         SaveConfig(Config);
         PopulateSettingsTabFromConfig();
@@ -1260,6 +1269,24 @@ ON CONFLICT(key) DO UPDATE SET
     private void OpenSettingsAdditionalModsFolder_Click(object sender, RoutedEventArgs e)
     {
         OpenFolderFromText(SettingsAdditionalModsTextBox.Text, "Additional mods path does not exist!");
+    }
+
+    private void BrowseSettingsHeadlessFolder_Click(object sender, RoutedEventArgs e)
+    {
+        using var folderDialog = new System.Windows.Forms.FolderBrowserDialog
+        {
+            Description = "Select Headless Client Root Folder"
+        };
+
+        if (folderDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+        {
+            SettingsHeadlessFolderTextBox.Text = folderDialog.SelectedPath;
+        }
+    }
+
+    private void OpenSettingsHeadlessFolder_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFolderFromText(SettingsHeadlessFolderTextBox.Text, "Headless folder path does not exist!");
     }
 
     private static void OpenFolderFromText(string? folderPath, string notFoundMessage)
@@ -1473,6 +1500,36 @@ ON CONFLICT(key) DO UPDATE SET
 
         PlayerPresenceListView.ItemsSource = snapshot.ActivePlayers;
         PlayerPresenceEventsListView.ItemsSource = snapshot.RecentEvents;
+
+        // Update raid status
+        if (RaidStatusText != null)
+        {
+            RaidStatusText.Text = snapshot.CurrentRaidType switch
+            {
+                "Solo" => "Solo Raid",
+                "Headless" => "Headless Raid",
+                _ => "No Raid"
+            };
+            RaidStatusText.Foreground = snapshot.CurrentRaidType switch
+            {
+                "Solo" => Brushes.LimeGreen,
+                "Headless" => Brushes.DodgerBlue,
+                _ => Brushes.Gray
+            };
+        }
+
+        // Update headless raid players
+        if (HeadlessRaidPlayersPanel != null)
+        {
+            var isHeadless = string.Equals(snapshot.CurrentRaidType, "Headless", StringComparison.OrdinalIgnoreCase);
+            HeadlessRaidPlayersPanel.Visibility = isHeadless ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+        }
+        if (HeadlessRaidPlayersListView != null)
+        {
+            HeadlessRaidPlayersListView.ItemsSource = snapshot.HeadlessRaidPlayers
+                .Select(name => new { Name = name })
+                .ToList();
+        }
     }
 
     private async void RefreshPlayerPresence_Click(object sender, RoutedEventArgs e)
@@ -4391,6 +4448,7 @@ public class ServerConfig
     public int Port { get; set; } = 25569;
     public string SptServerFolder { get; set; } = @"C:\SPT";
     public string AdditionalModsPath { get; set; } = "";
+    public string HeadlessFolder { get; set; } = "";
 }
 
 public class BootstrapConfig
