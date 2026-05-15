@@ -609,14 +609,9 @@
                         </StackPanel>
 
                         <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-
-                            <ListView x:Name="PlayerPresenceListView" Grid.Column="0"
+                            <ListView x:Name="PlayerPresenceListView"
                                       Background="#1e1e1e" Foreground="White"
-                                      BorderBrush="#3c3c3c" Margin="0,0,8,8">
+                                      BorderBrush="#3c3c3c" Margin="0,0,0,8">
                                 <ListView.Resources>
                                     <Style TargetType="GridViewColumnHeader">
                                         <Setter Property="Background" Value="#232323"/>
@@ -628,17 +623,124 @@
                                     <GridView>
                                         <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
                                         <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
+                                        <GridViewColumn Header="State" Width="170">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding State}">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="Gray"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Connected">
+                                                                        <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Disconnected or Joining">
+                                                                        <Setter Property="Foreground" Value="Gold"/>
+                                                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="In Solo Raid">
+                                                                        <Setter Property="Foreground" Value="DeepSkyBlue"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Disconnected after Local Raid">
+                                                                        <Setter Property="Foreground" Value="SkyBlue"/>
+                                                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Starting Raid">
+                                                                        <Setter Property="Foreground" Value="Orange"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Hosting Raid">
+                                                                        <Setter Property="Foreground" Value="MediumPurple"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="In Headless Raid">
+                                                                        <Setter Property="Foreground" Value="DodgerBlue"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Disconnected after Headless Raid">
+                                                                        <Setter Property="Foreground" Value="MediumPurple"/>
+                                                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding State}" Value="Disconnected">
+                                                                        <Setter Property="Foreground" Value="Tomato"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
                                         <GridViewColumn Header="Last Seen Stamp" Width="180" DisplayMemberBinding="{Binding LastSeenStamp}" />
                                     </GridView>
                                 </ListView.View>
                             </ListView>
+                        </Grid>
 
-                            <!-- Headless raid players panel (shown only during headless raids) -->
-                            <StackPanel x:Name="HeadlessRaidPlayersPanel" Grid.Column="1" Visibility="Collapsed" MinWidth="180">
-                                <TextBlock Text="Headless Raid Players" FontWeight="Bold" Foreground="DodgerBlue" Margin="0,0,0,4"/>
-                                <ListView x:Name="HeadlessRaidPlayersListView"
+                        <Grid Grid.Row="2" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <ListView x:Name="PlayerPresenceEventsListView" Grid.Column="0"
+                                      Background="#1e1e1e" Foreground="White"
+                                      BorderBrush="#3c3c3c" Margin="0,0,4,0">
+                                <ListView.Resources>
+                                    <Style TargetType="GridViewColumnHeader">
+                                        <Setter Property="Background" Value="#232323"/>
+                                        <Setter Property="Foreground" Value="White"/>
+                                        <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                    </Style>
+                                </ListView.Resources>
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Stamp" Width="180" DisplayMemberBinding="{Binding Stamp}" />
+                                        <GridViewColumn Header="Name" Width="160" DisplayMemberBinding="{Binding Name}" />
+                                        <GridViewColumn Header="Account Id" Width="220" DisplayMemberBinding="{Binding AccountId}" />
+                                        <GridViewColumn Header="Event" Width="90">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock HorizontalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Text" Value="Disconnected"/>
+                                                                <Setter Property="Foreground" Value="Tomato"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                                                        <Setter Property="Text" Value="Connected"/>
+                                                                        <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                        <Setter Property="FontWeight" Value="Bold"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+
+                            <Grid Grid.Column="1" Margin="4,0,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Headless Status:" FontWeight="Bold" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="HeadlessStatusText" Text="Disconnected" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="Gray"/>
+                                    <TextBlock Text="Location:" FontWeight="Bold" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                    <TextBlock x:Name="HeadlessLocationText" Text="Unknown" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="White"/>
+                                </StackPanel>
+
+                                <ListView x:Name="HeadlessRaidPlayersListView" Grid.Row="1"
                                           Background="#1e1e1e" Foreground="White"
-                                          BorderBrush="#3c3c3c" MinWidth="180">
+                                          BorderBrush="#3c3c3c">
                                     <ListView.Resources>
                                         <Style TargetType="GridViewColumnHeader">
                                             <Setter Property="Background" Value="#232323"/>
@@ -648,52 +750,12 @@
                                     </ListView.Resources>
                                     <ListView.View>
                                         <GridView>
-                                            <GridViewColumn Header="Player" Width="160" DisplayMemberBinding="{Binding Name}" />
+                                            <GridViewColumn Header="Headless Raid Players" Width="300" DisplayMemberBinding="{Binding}" />
                                         </GridView>
                                     </ListView.View>
                                 </ListView>
-                            </StackPanel>
+                            </Grid>
                         </Grid>
-
-                        <ListView x:Name="PlayerPresenceEventsListView" Grid.Row="2"
-                                  Background="#1e1e1e" Foreground="White"
-                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
-                            <ListView.Resources>
-                                <Style TargetType="GridViewColumnHeader">
-                                    <Setter Property="Background" Value="#232323"/>
-                                    <Setter Property="Foreground" Value="White"/>
-                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
-                                </Style>
-                            </ListView.Resources>
-                            <ListView.View>
-                                <GridView>
-                                    <GridViewColumn Header="Stamp" Width="180" DisplayMemberBinding="{Binding Stamp}" />
-                                    <GridViewColumn Header="Name" Width="220" DisplayMemberBinding="{Binding Name}" />
-                                    <GridViewColumn Header="Account Id" Width="300" DisplayMemberBinding="{Binding AccountId}" />
-                                    <GridViewColumn Header="Event" Width="110">
-                                        <GridViewColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <TextBlock HorizontalAlignment="Center">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Text" Value="Disconnected"/>
-                                                            <Setter Property="Foreground" Value="Tomato"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                                                                    <Setter Property="Text" Value="Connected"/>
-                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
-                                                                    <Setter Property="FontWeight" Value="Bold"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                            </DataTemplate>
-                                        </GridViewColumn.CellTemplate>
-                                    </GridViewColumn>
-                                </GridView>
-                            </ListView.View>
-                        </ListView>
 
                         <StackPanel Grid.Row="3" Orientation="Horizontal">
                             <Button Content="Refresh Players" Width="130" Click="RefreshPlayerPresence_Click" Background="DodgerBlue"/>
@@ -705,6 +767,7 @@
                 <TabItem Header="Settings">
                     <Grid Margin="5">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
@@ -765,7 +828,17 @@
                             <Button Grid.Column="3" Content="Open" Width="55" Click="OpenSettingsHeadlessFolder_Click" Background="DodgerBlue"/>
                         </Grid>
 
-                        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Grid Grid.Row="4" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="260"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Label Grid.Column="0" Content="Local Headless Player Id:" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" x:Name="SettingsLocalHeadlessPlayerIdTextBox"/>
+                        </Grid>
+
+                        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Content="Save Settings" Width="140" Click="SaveSettingsTab_Click" Background="ForestGreen"/>
                         </StackPanel>
                     </Grid>

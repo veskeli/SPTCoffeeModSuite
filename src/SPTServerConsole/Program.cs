@@ -441,7 +441,7 @@ app.MapGet("/api/status/spt-server", async context =>
 app.MapGet("/api/spt/players", async context =>
 {
     var runtimeSettings = SptCoffeeDb.ReadRuntimeSettings(sptCoffeeDbPath);
-    var snapshot = SptPlayerPresenceReader.BuildSnapshot(runtimeSettings.SptServerFolder, runtimeSettings.HeadlessFolder);
+    var snapshot = SptPlayerPresenceReader.BuildSnapshot(runtimeSettings.SptServerFolder, runtimeSettings.HeadlessFolder, runtimeSettings.LocalHeadlessPlayerId);
 
     context.Response.ContentType = "application/json";
     await context.Response.WriteAsync(JsonSerializer.Serialize(snapshot));
@@ -679,12 +679,14 @@ CREATE TABLE IF NOT EXISTS admins (
         var sptServerFolder = GetSetting(connection, "spt_server_folder");
         var additionalModsPath = GetSetting(connection, "additional_mods_path");
         var headlessFolder = GetSetting(connection, "headless_folder");
+        var localHeadlessPlayerId = GetSetting(connection, "local_headless_player_id");
 
         return new RuntimeSettings
         {
             SptServerFolder = string.IsNullOrWhiteSpace(sptServerFolder) ? @"C:\SPT" : sptServerFolder,
             AdditionalModsPath = additionalModsPath ?? string.Empty,
-            HeadlessFolder = headlessFolder ?? string.Empty
+            HeadlessFolder = headlessFolder ?? string.Empty,
+            LocalHeadlessPlayerId = localHeadlessPlayerId ?? string.Empty
         };
     }
 
@@ -937,38 +939,63 @@ ON CONFLICT(key) DO UPDATE SET
 
 public static class SptPlayerPresenceReader
 {
-    // Match `[WS] Player: ... has connected/disconnected` even when SPT adds timestamp/logger prefixes.
     private static readonly Regex PlayerEventRegex = new(@"\[(?:WS|ws)\]\s*Player:\s*(?<name>.+?)\s*\((?<id>[^)]+)\)\s*(?<stamp>\d+)\s*has\s+(?<state>connected|disconnected)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // Match raid start events in SPT server log
+    private static readonly Regex GetRaidTimeRegex = new(@"/singleplayer/settings/getRaidTime\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex LocalStartRegex = new(@"\[Client Request\]\s*/client/match/local/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex HeadlessStartRegex = new(@"\[Client Request\]\s*/fika/raid/headless/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // Match players joining headless raid from headless BepInEx log
-    private static readonly Regex HeadlessPlayerRegex = new(@"\[CoopHandler\]\s*AddClientToBotEnemies:\s*(?<name>.+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    // Match headless session end
+    private static readonly Regex HeadlessPlayerRegex = new(@"CoopHandler\]\s*AddClientToBotEnemies:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex HeadlessWaitingForHostRegex = new(@"HeadlessGameController\]\s*Starting task to wait for host to start the raid\.?", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex HeadlessAllPlayersLoadedRegex = new(@"HeadlessGameController\]\s*All players are loaded, continuing\.\.\.", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex HeadlessWebSocketConnectedRegex = new(@"Connected to HeadlessWebSocket", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex HeadlessLocationRegex = new(@"HeadlessGame\]\s*Location:\s*(?<location>.+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex HeadlessSessionEndRegex = new(@"Fika Server Session Statistics|NetManagerUtils\]\s*Destroyed FikaServer", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly object PresenceSync = new();
 
+    private const string StateConnected = "Connected";
+    private const string StateDisconnected = "Disconnected";
+    private const string StateDisconnectedOrJoining = "Disconnected or Joining";
+    private const string StateDisconnectedAfterLocalRaid = "Disconnected after Local Raid";
+    private const string StateDisconnectedAfterHeadlessRaid = "Disconnected after Headless Raid";
+    private const string StateInSoloRaid = "In Solo Raid";
+    private const string StateInHeadlessRaid = "In Headless Raid";
+    private const string StateStartingRaid = "Starting Raid";
+    private const string StateWaitingForRaid = "Waiting for Raid";
+    private const string StateHostingRaid = "Hosting Raid";
+    private const string HeadlessStatusRestarting = "Restarting for New Raid";
+    private const string UnknownHeadlessLocation = "Unknown";
+
     private static string _cachedLogPath = string.Empty;
     private static long _cachedOffset;
     private static string _pendingLineFragment = string.Empty;
-    private static readonly Dictionary<string, PlayerPresenceInfo> CachedActivePlayers = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, PlayerPresenceInfo> CachedPlayers = new(StringComparer.OrdinalIgnoreCase);
     private static readonly List<PlayerPresenceEventInfo> CachedRecentEvents = [];
-    private const int MaxRecentEvents = 25;
+    private const int MaxRecentEvents = 45;
 
-    // Raid tracking state
-    private static string _currentRaidType = "None"; // "None", "Solo", "Headless"
+    private static int _pendingSoloRaidStarts;
+    private static int _pendingRaidTimeRequests;
+    private static bool _headlessStartAwaitingLocalStart;
+    private static int _pendingHeadlessHostStarts;
+    private static bool _headlessRaidLoading;
+    private static bool _headlessReadyWaitingForRaid;
+    private static readonly HashSet<string> PendingHeadlessJoinPlayerKeys = new(StringComparer.OrdinalIgnoreCase);
+    private static string _configuredLocalHeadlessPlayerId = string.Empty;
 
-    // Headless log tracking state
     private static string _cachedHeadlessLogPath = string.Empty;
     private static long _cachedHeadlessOffset;
     private static string _pendingHeadlessFragment = string.Empty;
-    private static readonly HashSet<string> HeadlessRaidPlayers = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> ParsedHeadlessRaidPlayers = new(StringComparer.OrdinalIgnoreCase);
+    private static string _headlessLocation = UnknownHeadlessLocation;
 
-    public static PlayerPresenceSnapshot BuildSnapshot(string serverFolder, string headlessFolder = "")
+    public static PlayerPresenceSnapshot BuildSnapshot(string serverFolder, string headlessFolder = "", string localHeadlessPlayerId = "")
     {
         var now = DateTime.UtcNow;
         var isServerRunning = IsSptServerRunning();
+
+        lock (PresenceSync)
+        {
+            _configuredLocalHeadlessPlayerId = localHeadlessPlayerId?.Trim() ?? string.Empty;
+        }
 
         if (string.IsNullOrWhiteSpace(serverFolder) || !Directory.Exists(serverFolder))
         {
@@ -997,6 +1024,15 @@ public static class SptPlayerPresenceReader
         {
             ClearConnectedPlayers();
 
+            List<PlayerPresenceInfo> disconnectedPlayers;
+            lock (PresenceSync)
+            {
+                disconnectedPlayers = CachedPlayers.Values
+                    .OrderBy(GetStateSortRank)
+                    .ThenBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
             return new PlayerPresenceSnapshot
             {
                 LogFilePath = logFile,
@@ -1005,34 +1041,51 @@ public static class SptPlayerPresenceReader
                 IsServerRunning = false,
                 StatusMessage = "SPT.Server is stopped. All players are disconnected.",
                 ActiveCount = 0,
-                ActivePlayers = [],
+                ActivePlayers = disconnectedPlayers,
                 RecentEvents = [],
                 CurrentRaidType = "None",
+                HeadlessStatus = StateDisconnected,
+                HeadlessLocation = UnknownHeadlessLocation,
                 HeadlessRaidPlayers = []
             };
         }
 
         TailAndParseLatestLog(logFile);
 
-        // Tail headless log if headless folder is configured
         if (!string.IsNullOrWhiteSpace(headlessFolder))
         {
             TailAndParseHeadlessLog(headlessFolder);
         }
+        else
+        {
+            lock (PresenceSync)
+            {
+                ResetHeadlessCache(markPlayersDisconnected: true);
+            }
+        }
 
-        List<PlayerPresenceInfo> activePlayers;
+        List<PlayerPresenceInfo> trackedPlayers;
         List<PlayerPresenceEventInfo> recentEvents;
         string raidType;
+        string headlessStatus;
+        string headlessLocation;
         List<string> headlessPlayers;
+        int activeCount;
+        string statusMessage;
 
         lock (PresenceSync)
         {
-            activePlayers = CachedActivePlayers.Values
-                .OrderBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
+            trackedPlayers = CachedPlayers.Values
+                .OrderBy(GetStateSortRank)
+                .ThenBy(player => player.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             recentEvents = CachedRecentEvents.ToList();
-            raidType = _currentRaidType;
-            headlessPlayers = HeadlessRaidPlayers.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+            raidType = GetCurrentRaidType();
+            headlessStatus = GetHeadlessStatus();
+            headlessLocation = GetHeadlessLocation(headlessStatus);
+            headlessPlayers = GetHeadlessRaidPlayerNames();
+            activeCount = trackedPlayers.Count(player => IsActivePlayerState(player.State));
+            statusMessage = BuildStatusMessage(activeCount, raidType, headlessStatus);
         }
 
         return new PlayerPresenceSnapshot
@@ -1041,11 +1094,13 @@ public static class SptPlayerPresenceReader
             LogLastWriteUtc = File.GetLastWriteTimeUtc(logFile),
             LastUpdatedUtc = now,
             IsServerRunning = true,
-            StatusMessage = $"Tracking {activePlayers.Count} player(s).",
-            ActiveCount = activePlayers.Count,
-            ActivePlayers = activePlayers,
+            StatusMessage = statusMessage,
+            ActiveCount = activeCount,
+            ActivePlayers = trackedPlayers,
             RecentEvents = recentEvents,
             CurrentRaidType = raidType,
+            HeadlessStatus = headlessStatus,
+            HeadlessLocation = headlessLocation,
             HeadlessRaidPlayers = headlessPlayers
         };
     }
@@ -1086,6 +1141,23 @@ public static class SptPlayerPresenceReader
     private static bool IsSptServerRunning()
     {
         var regex = new Regex(@"^SPT\.Server$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        return Process.GetProcesses().Any(p =>
+        {
+            try
+            {
+                return regex.IsMatch(p.ProcessName);
+            }
+            catch
+            {
+                return false;
+            }
+        });
+    }
+
+    private static bool IsHeadlessManagerRunning()
+    {
+        var regex = new Regex(@"^FikaHeadlessManager$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         return Process.GetProcesses().Any(p =>
         {
@@ -1153,23 +1225,22 @@ public static class SptPlayerPresenceReader
         var headlessLogPath = Path.Combine(headlessFolder, "BepInEx", "LogOutput.log");
         if (!File.Exists(headlessLogPath))
         {
-            // Headless log doesn't exist - reset headless state
             lock (PresenceSync)
             {
-                if (HeadlessRaidPlayers.Count > 0 || !string.IsNullOrEmpty(_cachedHeadlessLogPath))
+                if (!string.IsNullOrEmpty(_cachedHeadlessLogPath) || ParsedHeadlessRaidPlayers.Count > 0)
                 {
-                    ResetHeadlessCache();
+                    ResetHeadlessCache(markPlayersDisconnected: true);
                 }
             }
+
             return;
         }
 
         lock (PresenceSync)
         {
-            // If the log file changed (different path or truncated = new session)
             if (!string.Equals(_cachedHeadlessLogPath, headlessLogPath, StringComparison.OrdinalIgnoreCase))
             {
-                ResetHeadlessCache();
+                ResetHeadlessCache(markPlayersDisconnected: false);
                 _cachedHeadlessLogPath = headlessLogPath;
             }
 
@@ -1179,8 +1250,7 @@ public static class SptPlayerPresenceReader
 
                 if (stream.Length < _cachedHeadlessOffset)
                 {
-                    // File was recreated (new headless session)
-                    ResetHeadlessCache();
+                    ResetHeadlessCache(markPlayersDisconnected: true);
                     _cachedHeadlessLogPath = headlessLogPath;
                 }
 
@@ -1220,16 +1290,36 @@ public static class SptPlayerPresenceReader
 
     private static void ProcessLogLine(string line)
     {
-        // Check for raid start events first
-        if (LocalStartRegex.IsMatch(line))
+        if (GetRaidTimeRegex.IsMatch(line))
         {
-            _currentRaidType = "Solo";
+            _pendingRaidTimeRequests++;
             return;
         }
+
         if (HeadlessStartRegex.IsMatch(line))
         {
-            _currentRaidType = "Headless";
-            HeadlessRaidPlayers.Clear();
+            _headlessStartAwaitingLocalStart = true;
+            _headlessRaidLoading = true;
+            _headlessReadyWaitingForRaid = false;
+            _headlessLocation = UnknownHeadlessLocation;
+            PendingHeadlessJoinPlayerKeys.Clear();
+            ParsedHeadlessRaidPlayers.Clear();
+            MarkHeadlessRaidPlayersDisconnected();
+            SeedPendingHeadlessJoinCandidates();
+            return;
+        }
+
+        if (LocalStartRegex.IsMatch(line))
+        {
+            if (_headlessStartAwaitingLocalStart)
+            {
+                _pendingHeadlessHostStarts++;
+                _headlessStartAwaitingLocalStart = false;
+            }
+            else
+            {
+                _pendingSoloRaidStarts++;
+            }
             return;
         }
 
@@ -1238,22 +1328,61 @@ public static class SptPlayerPresenceReader
             return;
         }
 
+        var (playerKey, player) = GetOrCreateTrackedPlayer(playerEvent.AccountId, playerEvent.Name);
+        player.Name = playerEvent.Name;
+        player.AccountId = playerEvent.AccountId;
+        player.LastSeenStamp = playerEvent.Stamp;
+        var previousState = player.State;
+
         if (playerEvent.IsConnected)
         {
-            CachedActivePlayers[playerEvent.AccountId] = new PlayerPresenceInfo
-            {
-                Name = playerEvent.Name,
-                AccountId = playerEvent.AccountId,
-                LastSeenStamp = playerEvent.Stamp
-            };
+            player.State = StateConnected;
+            PendingHeadlessJoinPlayerKeys.Remove(playerKey);
         }
         else
         {
-            CachedActivePlayers.Remove(playerEvent.AccountId);
-            // If no active players remain, reset raid type
-            if (CachedActivePlayers.Count == 0)
+            if (string.Equals(previousState, StateInSoloRaid, StringComparison.OrdinalIgnoreCase))
             {
-                _currentRaidType = "None";
+                player.State = StateDisconnectedAfterLocalRaid;
+                PendingHeadlessJoinPlayerKeys.Remove(playerKey);
+            }
+            else if (string.Equals(previousState, StateInHeadlessRaid, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(previousState, StateHostingRaid, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(previousState, StateStartingRaid, StringComparison.OrdinalIgnoreCase))
+            {
+                player.State = StateDisconnectedAfterHeadlessRaid;
+                PendingHeadlessJoinPlayerKeys.Remove(playerKey);
+                ParsedHeadlessRaidPlayers.Remove(player.Name);
+            }
+            else if (IsLocalHeadlessProfile(player))
+            {
+                if (_pendingHeadlessHostStarts > 0)
+                {
+                    _pendingHeadlessHostStarts--;
+                }
+
+                player.State = (_headlessRaidLoading || ParsedHeadlessRaidPlayers.Count > 0 || string.Equals(player.State, StateHostingRaid, StringComparison.OrdinalIgnoreCase))
+                    ? StateStartingRaid
+                    : StateDisconnected;
+            }
+            else if (_pendingRaidTimeRequests > 0)
+            {
+                _pendingRaidTimeRequests--;
+                player.State = StateDisconnectedOrJoining;
+                if (_headlessRaidLoading)
+                {
+                    PendingHeadlessJoinPlayerKeys.Add(playerKey);
+                }
+            }
+            else if (_pendingSoloRaidStarts > 0)
+            {
+                player.State = StateInSoloRaid;
+                _pendingSoloRaidStarts--;
+            }
+            else
+            {
+                player.State = StateDisconnected;
+                PendingHeadlessJoinPlayerKeys.Remove(playerKey);
             }
         }
 
@@ -1266,22 +1395,51 @@ public static class SptPlayerPresenceReader
 
     private static void ProcessHeadlessLogLine(string line)
     {
-        // Detect session end
         if (HeadlessSessionEndRegex.IsMatch(line))
         {
-            HeadlessRaidPlayers.Clear();
+            ResetHeadlessCache(markPlayersDisconnected: true);
             return;
         }
 
-        // Detect player joining headless raid
+        if (HeadlessWebSocketConnectedRegex.IsMatch(line))
+        {
+            _headlessReadyWaitingForRaid = true;
+            return;
+        }
+
+        var locationMatch = HeadlessLocationRegex.Match(line);
+        if (locationMatch.Success)
+        {
+            var location = locationMatch.Groups["location"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(location))
+            {
+                _headlessLocation = location;
+            }
+
+            return;
+        }
+
+        if (HeadlessWaitingForHostRegex.IsMatch(line))
+        {
+            _headlessRaidLoading = true;
+            _headlessReadyWaitingForRaid = false;
+        }
+
         var match = HeadlessPlayerRegex.Match(line);
         if (match.Success)
         {
             var name = match.Groups["name"].Value.Trim();
             if (!string.IsNullOrWhiteSpace(name))
             {
-                HeadlessRaidPlayers.Add(name);
+                ParsedHeadlessRaidPlayers.Add(name);
             }
+
+            return;
+        }
+
+        if (HeadlessAllPlayersLoadedRegex.IsMatch(line))
+        {
+            FinalizeHeadlessRaidLoad();
         }
     }
 
@@ -1290,27 +1448,341 @@ public static class SptPlayerPresenceReader
         _cachedLogPath = logFile;
         _cachedOffset = 0;
         _pendingLineFragment = string.Empty;
-        CachedActivePlayers.Clear();
         CachedRecentEvents.Clear();
-        _currentRaidType = "None";
+        _pendingSoloRaidStarts = 0;
+        _pendingRaidTimeRequests = 0;
+        _headlessStartAwaitingLocalStart = false;
+        _pendingHeadlessHostStarts = 0;
     }
 
-    private static void ResetHeadlessCache()
+    private static void ResetHeadlessCache(bool markPlayersDisconnected)
     {
+        if (markPlayersDisconnected)
+        {
+            MarkHeadlessRaidPlayersDisconnected();
+        }
+
         _cachedHeadlessLogPath = string.Empty;
         _cachedHeadlessOffset = 0;
         _pendingHeadlessFragment = string.Empty;
-        HeadlessRaidPlayers.Clear();
+        ParsedHeadlessRaidPlayers.Clear();
+        PendingHeadlessJoinPlayerKeys.Clear();
+        _headlessRaidLoading = false;
+        _headlessReadyWaitingForRaid = false;
+        _headlessLocation = UnknownHeadlessLocation;
+        _headlessStartAwaitingLocalStart = false;
+        _pendingHeadlessHostStarts = 0;
     }
 
     private static void ClearConnectedPlayers()
     {
         lock (PresenceSync)
         {
-            CachedActivePlayers.Clear();
             CachedRecentEvents.Clear();
-            _currentRaidType = "None";
-            HeadlessRaidPlayers.Clear();
+            _pendingSoloRaidStarts = 0;
+            _pendingRaidTimeRequests = 0;
+            ResetHeadlessCache(markPlayersDisconnected: true);
+
+            foreach (var player in CachedPlayers.Values)
+            {
+                player.State = StateDisconnected;
+            }
+        }
+    }
+
+    private static void FinalizeHeadlessRaidLoad()
+    {
+        _headlessRaidLoading = false;
+        _headlessReadyWaitingForRaid = false;
+
+        foreach (var entry in CachedPlayers.ToList())
+        {
+            var player = entry.Value;
+            if (IsLocalHeadlessProfile(player))
+            {
+                player.State = StateHostingRaid;
+                continue;
+            }
+
+            if (ParsedHeadlessRaidPlayers.Contains(player.Name))
+            {
+                player.State = StateInHeadlessRaid;
+                PendingHeadlessJoinPlayerKeys.Remove(entry.Key);
+                continue;
+            }
+
+            if (PendingHeadlessJoinPlayerKeys.Contains(entry.Key))
+            {
+                player.State = StateDisconnected;
+            }
+        }
+
+        foreach (var name in ParsedHeadlessRaidPlayers)
+        {
+            var (_, player) = GetOrCreateTrackedPlayer(string.Empty, name);
+            player.Name = name;
+            player.State = StateInHeadlessRaid;
+        }
+
+        if (TryGetHeadlessProfile(out _, out var headlessProfile))
+        {
+            headlessProfile.State = StateHostingRaid;
+        }
+
+        PendingHeadlessJoinPlayerKeys.Clear();
+    }
+
+    private static (string PlayerKey, PlayerPresenceInfo Player) GetOrCreateTrackedPlayer(string accountId, string name)
+    {
+        var trimmedName = name.Trim();
+
+        if (!string.IsNullOrWhiteSpace(accountId) && CachedPlayers.TryGetValue(accountId, out var byAccountId))
+        {
+            return (accountId, byAccountId);
+        }
+
+        var nameOnlyKey = GetNameOnlyKey(trimmedName);
+        if (!string.IsNullOrWhiteSpace(trimmedName) && CachedPlayers.TryGetValue(nameOnlyKey, out var placeholderPlayer))
+        {
+            if (!string.IsNullOrWhiteSpace(accountId))
+            {
+                CachedPlayers.Remove(nameOnlyKey);
+                placeholderPlayer.AccountId = accountId;
+                CachedPlayers[accountId] = placeholderPlayer;
+                return (accountId, placeholderPlayer);
+            }
+
+            return (nameOnlyKey, placeholderPlayer);
+        }
+
+        if (!string.IsNullOrWhiteSpace(trimmedName))
+        {
+            var byName = CachedPlayers.FirstOrDefault(kvp => string.Equals(kvp.Value.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(byName.Key))
+            {
+                if (!string.IsNullOrWhiteSpace(accountId) && !string.Equals(byName.Key, accountId, StringComparison.OrdinalIgnoreCase))
+                {
+                    CachedPlayers.Remove(byName.Key);
+                    byName.Value.AccountId = accountId;
+                    CachedPlayers[accountId] = byName.Value;
+                    return (accountId, byName.Value);
+                }
+
+                return (byName.Key, byName.Value);
+            }
+        }
+
+        var newPlayer = new PlayerPresenceInfo
+        {
+            Name = trimmedName,
+            AccountId = accountId,
+            State = StateDisconnected
+        };
+
+        var newKey = !string.IsNullOrWhiteSpace(accountId) ? accountId : nameOnlyKey;
+        CachedPlayers[newKey] = newPlayer;
+        return (newKey, newPlayer);
+    }
+
+    private static string GetNameOnlyKey(string name) => $"name:{name}";
+
+    private static bool IsActivePlayerState(string state) =>
+        !string.Equals(state, StateDisconnected, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(state, StateDisconnectedAfterLocalRaid, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(state, StateDisconnectedAfterHeadlessRaid, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsHeadlessPlayerState(string state) =>
+        string.Equals(state, StateStartingRaid, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(state, StateHostingRaid, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(state, StateInHeadlessRaid, StringComparison.OrdinalIgnoreCase);
+
+    private static int GetStateSortRank(PlayerPresenceInfo player) => player.State switch
+    {
+        StateConnected => 0,
+        StateDisconnectedOrJoining => 1,
+        StateInSoloRaid => 2,
+        StateDisconnectedAfterLocalRaid => 3,
+        StateStartingRaid => 4,
+        StateHostingRaid => 5,
+        StateInHeadlessRaid => 6,
+        StateDisconnectedAfterHeadlessRaid => 7,
+        _ => 8
+    };
+
+    private static string GetCurrentRaidType()
+    {
+        var hasHeadless = _headlessRaidLoading
+            || ParsedHeadlessRaidPlayers.Count > 0
+            || CachedPlayers.Values.Any(player => IsHeadlessPlayerState(player.State));
+        var hasSolo = _pendingSoloRaidStarts > 0
+            || CachedPlayers.Values.Any(player => !IsLocalHeadlessProfile(player) && string.Equals(player.State, StateInSoloRaid, StringComparison.OrdinalIgnoreCase));
+
+        if (hasHeadless && hasSolo)
+        {
+            return "Mixed";
+        }
+
+        if (hasHeadless)
+        {
+            return "Headless";
+        }
+
+        if (hasSolo)
+        {
+            return "Solo";
+        }
+
+        return "None";
+    }
+
+    private static List<string> GetHeadlessRaidPlayerNames()
+    {
+        return CachedPlayers.Values
+            .Where(player => !IsLocalHeadlessProfile(player) && string.Equals(player.State, StateInHeadlessRaid, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(player.Name))
+            .Select(player => player.Name)
+            .Concat(ParsedHeadlessRaidPlayers)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string GetHeadlessStatus()
+    {
+        if (TryGetHeadlessProfile(out _, out var headlessProfile))
+        {
+            if (string.Equals(headlessProfile.State, StateDisconnectedAfterHeadlessRaid, StringComparison.OrdinalIgnoreCase))
+            {
+                return IsHeadlessManagerRunning() ? HeadlessStatusRestarting : StateDisconnected;
+            }
+
+            return headlessProfile.State;
+        }
+
+        if (_headlessRaidLoading)
+        {
+            return StateStartingRaid;
+        }
+
+        if (ParsedHeadlessRaidPlayers.Count > 0)
+        {
+            return StateHostingRaid;
+        }
+
+        if (_headlessReadyWaitingForRaid)
+        {
+            return StateWaitingForRaid;
+        }
+
+        if (IsHeadlessManagerRunning())
+        {
+            return HeadlessStatusRestarting;
+        }
+
+        return StateDisconnected;
+    }
+
+    private static string GetHeadlessLocation(string headlessStatus)
+    {
+        if (string.Equals(headlessStatus, StateDisconnected, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headlessStatus, HeadlessStatusRestarting, StringComparison.OrdinalIgnoreCase))
+        {
+            return UnknownHeadlessLocation;
+        }
+
+        return string.IsNullOrWhiteSpace(_headlessLocation) ? UnknownHeadlessLocation : _headlessLocation;
+    }
+
+    private static string BuildStatusMessage(int activeCount, string raidType, string headlessStatus)
+    {
+        var baseMessage = $"Tracking {activeCount} player(s).";
+
+        if (raidType == "Mixed")
+        {
+            return $"{baseMessage} Solo and headless raids are active.";
+        }
+
+        if (raidType == "Solo")
+        {
+            return $"{baseMessage} Solo raids are active.";
+        }
+
+        if (raidType == "Headless")
+        {
+            return $"{baseMessage} Headless status: {headlessStatus}.";
+        }
+
+        return baseMessage;
+    }
+
+    private static bool IsLocalHeadlessProfile(PlayerPresenceInfo player)
+    {
+        if (player == null)
+        {
+            return false;
+        }
+
+        var configuredId = _configuredLocalHeadlessPlayerId;
+        if (!string.IsNullOrWhiteSpace(configuredId))
+        {
+            return string.Equals(player.AccountId, configuredId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(player.Name, configuredId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(player.Name, $"headless_{configuredId}", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return player.Name.StartsWith("headless_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetHeadlessProfile(out string playerKey, out PlayerPresenceInfo player)
+    {
+        foreach (var entry in CachedPlayers)
+        {
+            if (IsLocalHeadlessProfile(entry.Value))
+            {
+                playerKey = entry.Key;
+                player = entry.Value;
+                return true;
+            }
+        }
+
+        playerKey = string.Empty;
+        player = null!;
+        return false;
+    }
+
+    private static void MarkHeadlessRaidPlayersDisconnected()
+    {
+        foreach (var player in CachedPlayers.Values)
+        {
+            if (IsHeadlessPlayerState(player.State))
+            {
+                player.State = StateDisconnectedAfterHeadlessRaid;
+            }
+        }
+
+        foreach (var key in PendingHeadlessJoinPlayerKeys.ToList())
+        {
+            if (CachedPlayers.TryGetValue(key, out var pendingPlayer)
+                && string.Equals(pendingPlayer.State, StateDisconnectedOrJoining, StringComparison.OrdinalIgnoreCase))
+            {
+                pendingPlayer.State = StateDisconnected;
+            }
+        }
+    }
+
+    private static void SeedPendingHeadlessJoinCandidates()
+    {
+        foreach (var entry in CachedPlayers)
+        {
+            var player = entry.Value;
+            if (IsLocalHeadlessProfile(player))
+            {
+                continue;
+            }
+
+            if (string.Equals(player.State, StateDisconnectedOrJoining, StringComparison.OrdinalIgnoreCase))
+            {
+                PendingHeadlessJoinPlayerKeys.Add(entry.Key);
+            }
         }
     }
 
@@ -1340,5 +1812,6 @@ public class RuntimeSettings
     public string SptServerFolder { get; set; } = @"C:\SPT";
     public string AdditionalModsPath { get; set; } = string.Empty;
     public string HeadlessFolder { get; set; } = string.Empty;
+    public string LocalHeadlessPlayerId { get; set; } = string.Empty;
 }
 

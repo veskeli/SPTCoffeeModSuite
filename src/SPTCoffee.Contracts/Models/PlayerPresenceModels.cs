@@ -12,6 +12,9 @@ public class PlayerPresenceInfo
 
     [JsonPropertyName("LastSeenStamp")]
     public string LastSeenStamp { get; set; } = string.Empty;
+
+    [JsonPropertyName("State")]
+    public string State { get; set; } = "Disconnected";
 }
 
 public class PlayerPresenceEventInfo
@@ -58,11 +61,17 @@ public class PlayerPresenceSnapshot
     [JsonPropertyName("Error")]
     public string Error { get; set; } = string.Empty;
 
-    /// <summary>Current raid type: "None", "Solo", or "Headless".</summary>
+    /// <summary>Current raid summary: "None", "Solo", "Headless", or "Mixed".</summary>
     [JsonPropertyName("CurrentRaidType")]
     public string CurrentRaidType { get; set; } = "None";
 
     /// <summary>Players detected in the current headless raid (from headless BepInEx log).</summary>
     [JsonPropertyName("HeadlessRaidPlayers")]
     public List<string> HeadlessRaidPlayers { get; set; } = [];
+
+    [JsonPropertyName("HeadlessStatus")]
+    public string HeadlessStatus { get; set; } = "Disconnected";
+
+    [JsonPropertyName("HeadlessLocation")]
+    public string HeadlessLocation { get; set; } = "Unknown";
 }
