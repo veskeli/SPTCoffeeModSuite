@@ -2308,7 +2308,7 @@ ON CONFLICT(name) DO UPDATE SET
             return false;
 
         var existingMod = TryGetCurrentClientMod(detected.ClientModName);
-        var stagedFileName = StageClientPendingFile(packagePath, Path.GetFileName(packagePath));
+        var stagedFileName = StageClientPendingFile(packagePath, detected.ClientModName + ".zip");
 
         if (existingMod != null)
         {
@@ -2484,7 +2484,7 @@ ON CONFLICT(name) DO UPDATE SET
 
                 if (!string.IsNullOrWhiteSpace(selectedFilePath))
                 {
-                    updatedMod.FileName = StageClientPendingFile(selectedFilePath, updatedMod.FileName);
+                    updatedMod.FileName = StageClientPendingFile(selectedFilePath, updatedMod.Name + ".zip");
                 }
             }
 
@@ -3277,6 +3277,22 @@ ON CONFLICT(file_name) DO UPDATE SET
 
     private static string ResolveFolderModSourceDirectory(string extractPath, string modName)
     {
+        var bundledPluginFolder = Path.Combine(extractPath, "BepInEx", "plugins", modName);
+        if (Directory.Exists(bundledPluginFolder))
+            return bundledPluginFolder;
+
+        var bundledPluginsRoot = Path.Combine(extractPath, "BepInEx", "plugins");
+        if (Directory.Exists(bundledPluginsRoot))
+        {
+            var namedInBundled = Path.Combine(bundledPluginsRoot, modName);
+            if (Directory.Exists(namedInBundled))
+                return namedInBundled;
+
+            var bundledSubdirs = Directory.GetDirectories(bundledPluginsRoot);
+            if (bundledSubdirs.Length == 1)
+                return bundledSubdirs[0];
+        }
+
         var directFolder = Path.Combine(extractPath, modName);
         if (Directory.Exists(directFolder))
             return directFolder;
@@ -3974,6 +3990,7 @@ ON CONFLICT(name) DO UPDATE SET
 
         var tempTargetFolder = Path.Combine(tempExtractRoot, targetName + "_" + Guid.NewGuid().ToString("N"));
         ZipFile.ExtractToDirectory(zipPath, tempTargetFolder);
+        var extractedSourceFolder = ResolveServerModSourceDirectory(tempTargetFolder, targetName);
 
         var backupFolder = Path.Combine(tempExtractRoot, targetName + "_backup_" + Guid.NewGuid().ToString("N"));
         if (Directory.Exists(targetFolder))
@@ -3983,11 +4000,36 @@ ON CONFLICT(name) DO UPDATE SET
             Directory.Move(targetFolder, backupFolder);
         }
 
-        Directory.Move(tempTargetFolder, targetFolder);
+        Directory.Move(extractedSourceFolder, targetFolder);
 
 
         if (Directory.Exists(backupFolder))
             Directory.Delete(backupFolder, true);
+
+        if (Directory.Exists(tempTargetFolder))
+            Directory.Delete(tempTargetFolder, true);
+    }
+
+    private static string ResolveServerModSourceDirectory(string extractRoot, string modName)
+    {
+        var sptRoot = Path.Combine(extractRoot, "SPT", "user", "mods", modName);
+        if (Directory.Exists(sptRoot))
+            return sptRoot;
+
+        var directModFolder = Path.Combine(extractRoot, modName);
+        if (Directory.Exists(directModFolder))
+            return directModFolder;
+
+        var subDirectories = Directory.GetDirectories(extractRoot);
+        var namedMatch = subDirectories.FirstOrDefault(dir =>
+            string.Equals(Path.GetFileName(dir), modName, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(namedMatch))
+            return namedMatch;
+
+        if (subDirectories.Length == 1)
+            return subDirectories[0];
+
+        return extractRoot;
     }
 
     private static List<string> GetConfigConflictRelativePaths(string incomingRoot, string existingRoot)
@@ -5029,7 +5071,7 @@ ON CONFLICT(name) DO UPDATE SET
         if (string.IsNullOrWhiteSpace(bundle.ServerModName))
             return null;
 
-        var storedFileName = CopyServerModZipToStorage(zipPath);
+        var storedFileName = CopyServerModZipToStorage(zipPath, bundle.ServerModName + ".zip");
         var storedZipPath = ResolvePendingServerZipPath(storedFileName);
         var serverVersion = string.IsNullOrWhiteSpace(bundle.ServerModVersion)
             ? ExtractServerModVersionFromZip(storedZipPath, bundle.ServerModName)
@@ -5124,7 +5166,7 @@ ON CONFLICT(name) DO UPDATE SET
             pendingClient.IsOptional = overrideIsOptional.Value;
         if (overrideOptionalDefaultState.HasValue)
             pendingClient.OptionalDefaultState = overrideOptionalDefaultState.Value;
-        pendingClient.FileName = StageClientPendingFile(zipPath, Path.GetFileName(zipPath));
+        pendingClient.FileName = StageClientPendingFile(zipPath, bundle.ClientModName + ".zip");
 
         var shouldQueueAsUpdate = existingClient != null
                                   && (string.Equals(clientPendingState, "update", StringComparison.OrdinalIgnoreCase)
@@ -5254,7 +5296,7 @@ ON CONFLICT(name) DO UPDATE SET
                 _ = serverModsWithConfigConflicts;
             }
 
-            var storedFileName = CopyServerModZipToStorage(selectedZipPath);
+            var storedFileName = CopyServerModZipToStorage(selectedZipPath, selected.Name + ".zip");
             var storedZipPath = ResolvePendingServerZipPath(storedFileName);
             var newVersion = ExtractServerModVersionFromZip(storedZipPath, selected.Name);
             newVersion = NormalizeVersionForStorage(selectedServerVersion, newVersion);
@@ -5319,12 +5361,14 @@ ON CONFLICT(name) DO UPDATE SET
         }
     }
 
-    private string CopyServerModZipToStorage(string sourceZipPath)
+    private string CopyServerModZipToStorage(string sourceZipPath, string? preferredFileName = null)
     {
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
 
-        var fileName = Path.GetFileName(sourceZipPath);
+        var fileName = string.IsNullOrWhiteSpace(preferredFileName)
+            ? Path.GetFileName(sourceZipPath)
+            : preferredFileName;
         return StageServerPendingZip(sourceZipPath, fileName);
     }
 
