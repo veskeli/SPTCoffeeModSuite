@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using System.Windows.Controls;
 using SPTServerManager.Models;
 
 namespace SPTServerManager;
@@ -8,6 +9,10 @@ public partial class FileChangePreviewWindow : Window
     public IReadOnlyCollection<string> ExcludedSourcePaths { get; private set; } = Array.Empty<string>();
     public string? SelectedPluginVersion { get; private set; }
     public string? SelectedServerVersion { get; private set; }
+    public bool IncludePluginUpdate { get; private set; }
+    public bool IncludeServerUpdate { get; private set; }
+    public bool SkipPluginUpdateOnSameVersion { get; private set; }
+    public bool SkipServerUpdateOnSameVersion { get; private set; }
     public bool SelectedPluginIsFolderMod { get; private set; }
     public bool SelectedPluginAllowOnHeadless { get; private set; }
     public bool SelectedPluginIsOptional { get; private set; }
@@ -62,6 +67,9 @@ public partial class FileChangePreviewWindow : Window
             ? Visibility.Collapsed
             : Visibility.Visible;
 
+        PluginIncludeCheckBox.IsChecked = !string.Equals(pluginAction, "None", StringComparison.OrdinalIgnoreCase);
+        ServerIncludeCheckBox.IsChecked = !string.Equals(serverAction, "None", StringComparison.OrdinalIgnoreCase);
+
         PluginVersionBox.Text = FormatVersionForInput(pluginNewVersion);
         ServerVersionBox.Text = FormatVersionForInput(serverNewVersion);
         PluginIsFolderModCheckBox.IsChecked = pluginIsFolderMod;
@@ -94,6 +102,9 @@ public partial class FileChangePreviewWindow : Window
     {
         foreach (var item in _items)
         {
+            item.SelectionChoice = string.Equals(item.SourceKind, "Old", StringComparison.OrdinalIgnoreCase)
+                ? FileChangePreviewItem.ChoiceKeepExisting
+                : FileChangePreviewItem.ChoiceKeepIncoming;
             item.IsIncluded = true;
         }
 
@@ -104,6 +115,7 @@ public partial class FileChangePreviewWindow : Window
     {
         foreach (var item in _items)
         {
+            item.SelectionChoice = FileChangePreviewItem.ChoiceKeepNone;
             item.IsIncluded = false;
         }
 
@@ -112,27 +124,45 @@ public partial class FileChangePreviewWindow : Window
 
     private bool TryCommitSelection()
     {
-        var selectedCount = _items.Count(i => i.IsIncluded);
+        IncludePluginUpdate = PluginVersionPanel.Visibility == Visibility.Visible && PluginIncludeCheckBox.IsChecked == true;
+        IncludeServerUpdate = ServerVersionPanel.Visibility == Visibility.Visible && ServerIncludeCheckBox.IsChecked == true;
+        SkipPluginUpdateOnSameVersion = false;
+        SkipServerUpdateOnSameVersion = false;
+        var skipPluginUpdate = false;
+        var skipServerUpdate = false;
+
+        var selectedCount = _items.Count(i => i.ShouldKeepAny);
         if (selectedCount == 0)
         {
             MessageBox.Show("Select at least one file to continue.", "No Files Selected", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
+        foreach (var item in _items)
+        {
+            item.IsIncluded = item.ShouldKeepAny;
+        }
+
+        if (!IncludePluginUpdate && !IncludeServerUpdate)
+        {
+            MessageBox.Show("Select Include for the plugin and/or server mod before continuing.", "Nothing Selected", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
         ExcludedSourcePaths = _items
-            .Where(i => !i.IsIncluded && !string.IsNullOrWhiteSpace(i.SourceRelativePath))
+            .Where(i => !i.ShouldKeepIncoming && !string.IsNullOrWhiteSpace(i.SourceRelativePath))
             .Select(i => i.SourceRelativePath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        SelectedPluginVersion = PluginVersionPanel.Visibility == Visibility.Visible
+        SelectedPluginVersion = IncludePluginUpdate
             ? NormalizeVersionInput(PluginVersionBox.Text)
             : null;
-        SelectedServerVersion = ServerVersionPanel.Visibility == Visibility.Visible
+        SelectedServerVersion = IncludeServerUpdate
             ? NormalizeVersionInput(ServerVersionBox.Text)
             : null;
 
-        if (!string.Equals(_pluginAction, "None", StringComparison.OrdinalIgnoreCase)
+        if (IncludePluginUpdate && !string.Equals(_pluginAction, "None", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(SelectedPluginVersion))
         {
             MessageBox.Show(
@@ -143,7 +173,7 @@ public partial class FileChangePreviewWindow : Window
             return false;
         }
 
-        if (!string.Equals(_serverAction, "None", StringComparison.OrdinalIgnoreCase)
+        if (IncludeServerUpdate && !string.Equals(_serverAction, "None", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(SelectedServerVersion))
         {
             MessageBox.Show(
@@ -159,11 +189,15 @@ public partial class FileChangePreviewWindow : Window
         SelectedPluginIsOptional = PluginIsOptionalCheckBox.IsChecked == true;
         SelectedPluginOptionalDefaultState = PluginOptionalDefaultStateCheckBox.IsChecked == true;
 
-        if (!ConfirmSameVersionIfNeeded("Plugin", _pluginAction, _pluginOldVersion, SelectedPluginVersion))
+        if (IncludePluginUpdate
+            && !ConfirmSameVersionIfNeeded("Plugin", _pluginAction, _pluginOldVersion, SelectedPluginVersion, out skipPluginUpdate))
             return false;
+        SkipPluginUpdateOnSameVersion = skipPluginUpdate;
 
-        if (!ConfirmSameVersionIfNeeded("Server Mod", _serverAction, _serverOldVersion, SelectedServerVersion))
+        if (IncludeServerUpdate
+            && !ConfirmSameVersionIfNeeded("Server Mod", _serverAction, _serverOldVersion, SelectedServerVersion, out skipServerUpdate))
             return false;
+        SkipServerUpdateOnSameVersion = skipServerUpdate;
 
         return true;
     }
@@ -186,8 +220,10 @@ public partial class FileChangePreviewWindow : Window
         return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
-    private static bool ConfirmSameVersionIfNeeded(string label, string action, string? oldVersion, string? newVersion)
+    private static bool ConfirmSameVersionIfNeeded(string label, string action, string? oldVersion, string? newVersion, out bool skipSameVersionUpdate)
     {
+        skipSameVersionUpdate = false;
+
         if (string.Equals(action, "None", StringComparison.OrdinalIgnoreCase))
             return true;
 
@@ -200,12 +236,36 @@ public partial class FileChangePreviewWindow : Window
             return true;
 
         var result = MessageBox.Show(
-            $"{label} new version is the same as old version ({oldNorm}).\nDo you want to continue anyway?",
+            $"{label} new version is the same as old version ({oldNorm}).\nDo you want to update still?",
             "Same Version Detected",
-            MessageBoxButton.YesNo,
+            MessageBoxButton.YesNoCancel,
             MessageBoxImage.Question);
 
-        return result == MessageBoxResult.Yes;
+        switch (result)
+        {
+            case MessageBoxResult.Yes:
+                return true;
+            case MessageBoxResult.No:
+                skipSameVersionUpdate = true;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void ComboBoxItem_MouseEnter(object sender, RoutedEventArgs e)
+    {
+        if (sender is ComboBoxItem item)
+        {
+            item.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x3d, 0x3d, 0x40));
+        }
+    }
+
+    private void ComboBoxItem_MouseLeave(object sender, RoutedEventArgs e)
+    {
+        if (sender is ComboBoxItem item)
+        {
+            item.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x2d, 0x2d, 0x30));
+        }
     }
 }
-
