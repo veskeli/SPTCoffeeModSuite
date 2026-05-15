@@ -339,10 +339,10 @@
                                     Click="AllowSelectedPlugin_Click" Background="DarkOliveGreen"
                                     Name="AllowSelectedPluginButton"/>
                             <Button Content="Update Selected" Width="130" Margin="5,0,0,0"
-                                    IsEnabled="False" Background="#555" Foreground="#999"
+                                    Click="UpdateSelectedPlugin_Click" Background="DarkGreen"
                                     Name="UpdateSelectedPluginButton"/>
                             <Button Content="Update All" Width="100" Margin="5,0,0,0"
-                                    IsEnabled="False" Background="#555" Foreground="#999"
+                                    Click="UpdateAllPlugins_Click" Background="DarkGreen"
                                     Name="UpdateAllPluginsButton"/>
                         </StackPanel>
                     </Grid>

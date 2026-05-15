@@ -43,6 +43,10 @@ public partial class MainWindow : Window
     {
         Timeout = TimeSpan.FromSeconds(3)
     };
+    private static readonly HttpClient PluginDownloadHttpClient = new()
+    {
+        Timeout = TimeSpan.FromMinutes(3)
+    };
 
     private HubConnection? _hubConnection;
 
@@ -2659,8 +2663,8 @@ ON CONFLICT(file_name) DO UPDATE SET
             catch { /* best-effort */ }
         }
 
-        // Discover plugins from SPT server folder (used for both Server and Headless)
-        var pluginsPath = Path.Combine(Config.SptServerFolder, "BepInEx", "plugins");
+        // Prefer the headless server plugins path; fall back to the main server path when unset.
+        var pluginsPath = ResolveInstalledPluginsScanPath();
         var discovered = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         if (Directory.Exists(pluginsPath))
@@ -2839,6 +2843,255 @@ ON CONFLICT(file_name) DO UPDATE SET
         catch (Exception ex)
         {
             MessageBox.Show("Failed to update mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void UpdateSelectedPlugin_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedPlugins = InstalledPluginsListView.SelectedItems.Cast<InstalledPluginViewModel>().ToList();
+        if (selectedPlugins.Count == 0)
+        {
+            MessageBox.Show("Please select one or more plugins to update.", "Info", MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        await UpdateInstalledPluginsAsync(selectedPlugins.Select(p => p.Name).ToList(), "selected");
+    }
+
+    private async void UpdateAllPlugins_Click(object sender, RoutedEventArgs e)
+    {
+        var allPlugins = (InstalledPluginsListView.ItemsSource as IEnumerable<InstalledPluginViewModel>)?.ToList() ?? new List<InstalledPluginViewModel>();
+        if (allPlugins.Count == 0)
+        {
+            MessageBox.Show("No plugins available to update.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var candidates = allPlugins
+            .Where(p => p.Status.Contains("Outdated", StringComparison.OrdinalIgnoreCase)
+                        || p.Status.Contains("Not installed", StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (candidates.Count == 0)
+        {
+            MessageBox.Show("All installed plugins are already up to date.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        await UpdateInstalledPluginsAsync(candidates, "all");
+    }
+
+    private async Task UpdateInstalledPluginsAsync(List<string> pluginNames, string scopeLabel)
+    {
+        if (pluginNames.Count == 0)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_databasePath) || !File.Exists(_databasePath))
+        {
+            MessageBox.Show("Database path is not configured or does not exist.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var targetPluginsPath = ResolveHeadlessPluginsPath(createIfMissing: true);
+        if (string.IsNullOrWhiteSpace(targetPluginsPath))
+        {
+            MessageBox.Show("Headless folder is not configured. Set it in Settings before updating plugins.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        Dictionary<string, ModInfo> dbMods;
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+            dbMods = LoadModsFromDatabase(connection).ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to read plugins from database: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        UpdateSelectedPluginButton.IsEnabled = false;
+        UpdateAllPluginsButton.IsEnabled = false;
+
+        var updated = 0;
+        var skipped = 0;
+        var failed = new List<string>();
+
+        try
+        {
+            foreach (var pluginName in pluginNames.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!dbMods.TryGetValue(pluginName, out var dbMod))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!dbMod.AllowOnHeadless)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    await DownloadAndInstallHeadlessPluginAsync(dbMod, targetPluginsPath);
+                    updated++;
+                }
+                catch (Exception ex)
+                {
+                    failed.Add($"{pluginName}: {ex.Message}");
+                }
+            }
+
+            RefreshInstalledPlugins_Click(this, new RoutedEventArgs());
+
+            var resultText = $"Updated {updated} plugin(s) to headless server plugins. Skipped: {skipped}.";
+            if (failed.Count > 0)
+            {
+                var details = string.Join("\n", failed.Take(5));
+                if (failed.Count > 5)
+                    details += $"\n...and {failed.Count - 5} more.";
+
+                MessageBox.Show($"{resultText}\nFailed: {failed.Count}\n\n{details}",
+                    "Plugin update completed with errors", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else
+            {
+                MessageBox.Show($"{resultText}\nScope: {scopeLabel}.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        finally
+        {
+            UpdateSelectedPluginButton.IsEnabled = true;
+            UpdateAllPluginsButton.IsEnabled = true;
+        }
+    }
+
+    private async Task DownloadAndInstallHeadlessPluginAsync(ModInfo dbMod, string targetPluginsPath)
+    {
+        var downloadUrl = $"{BaseUrl}/api/plugins/{Uri.EscapeDataString(dbMod.Name)}/zip";
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_{dbMod.Name}_{Guid.NewGuid():N}.zip");
+        var extractPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_extract_{dbMod.Name}_{Guid.NewGuid():N}");
+
+        try
+        {
+            using (var response = await PluginDownloadHttpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            {
+                response.EnsureSuccessStatusCode();
+                await using var sourceStream = await response.Content.ReadAsStreamAsync();
+                await using var targetStream = File.Create(tempZipPath);
+                await sourceStream.CopyToAsync(targetStream);
+            }
+
+            ZipFile.ExtractToDirectory(tempZipPath, extractPath);
+            Directory.CreateDirectory(targetPluginsPath);
+
+            if (dbMod.IsFolderMod)
+            {
+                var sourceFolder = ResolveFolderModSourceDirectory(extractPath, dbMod.Name);
+                var destinationFolder = Path.Combine(targetPluginsPath, dbMod.Name);
+
+                if (Directory.Exists(destinationFolder))
+                    Directory.Delete(destinationFolder, true);
+
+                CopyDirectoryRecursive(sourceFolder, destinationFolder);
+            }
+            else
+            {
+                var dllFiles = Directory.GetFiles(extractPath, "*.dll", SearchOption.AllDirectories);
+                var expectedDll = dbMod.Name + ".dll";
+                var sourceDll = dllFiles.FirstOrDefault(f =>
+                                    string.Equals(Path.GetFileName(f), expectedDll, StringComparison.OrdinalIgnoreCase))
+                                ?? dllFiles.FirstOrDefault();
+
+                if (sourceDll == null)
+                    throw new InvalidDataException("Downloaded plugin package does not contain a DLL.");
+
+                var destinationDll = Path.Combine(targetPluginsPath, Path.GetFileName(sourceDll));
+                if (File.Exists(destinationDll))
+                    File.Delete(destinationDll);
+
+                File.Copy(sourceDll, destinationDll, true);
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempZipPath))
+                File.Delete(tempZipPath);
+            if (Directory.Exists(extractPath))
+                Directory.Delete(extractPath, true);
+        }
+    }
+
+    private static string ResolveFolderModSourceDirectory(string extractPath, string modName)
+    {
+        var directFolder = Path.Combine(extractPath, modName);
+        if (Directory.Exists(directFolder))
+            return directFolder;
+
+        var subDirectories = Directory.GetDirectories(extractPath);
+        if (subDirectories.Length == 1)
+            return subDirectories[0];
+
+        var bestMatch = subDirectories.FirstOrDefault(dir =>
+            string.Equals(Path.GetFileName(dir), modName, StringComparison.OrdinalIgnoreCase)
+            || File.Exists(Path.Combine(dir, modName + ".dll")));
+        if (!string.IsNullOrWhiteSpace(bestMatch))
+            return bestMatch;
+
+        return extractPath;
+    }
+
+    private string ResolveInstalledPluginsScanPath()
+    {
+        var headlessPluginsPath = ResolveHeadlessPluginsPath(createIfMissing: false);
+        if (!string.IsNullOrWhiteSpace(headlessPluginsPath))
+            return headlessPluginsPath;
+
+        return Path.Combine(Config.SptServerFolder, "BepInEx", "plugins");
+    }
+
+    private string? ResolveHeadlessPluginsPath(bool createIfMissing)
+    {
+        if (string.IsNullOrWhiteSpace(Config.HeadlessFolder))
+            return null;
+
+        var candidates = new[]
+        {
+            Path.Combine(Config.HeadlessFolder, "server", "BepInEx", "plugins"),
+            Path.Combine(Config.HeadlessFolder, "Server", "BepInEx", "plugins"),
+            Path.Combine(Config.HeadlessFolder, "BepInEx", "plugins")
+        };
+
+        var resolved = candidates.FirstOrDefault(Directory.Exists) ?? candidates[0];
+        if (createIfMissing)
+            Directory.CreateDirectory(resolved);
+
+        return resolved;
+    }
+
+    private static void CopyDirectoryRecursive(string sourceDir, string destinationDir)
+    {
+        Directory.CreateDirectory(destinationDir);
+
+        foreach (var file in Directory.GetFiles(sourceDir))
+        {
+            var destinationFile = Path.Combine(destinationDir, Path.GetFileName(file));
+            File.Copy(file, destinationFile, true);
+        }
+
+        foreach (var directory in Directory.GetDirectories(sourceDir))
+        {
+            var destinationSubDirectory = Path.Combine(destinationDir, Path.GetFileName(directory));
+            CopyDirectoryRecursive(directory, destinationSubDirectory);
         }
     }
 
