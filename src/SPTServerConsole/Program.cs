@@ -940,7 +940,8 @@ ON CONFLICT(key) DO UPDATE SET
 public static class SptPlayerPresenceReader
 {
     private static readonly Regex PlayerEventRegex = new(@"\[(?:WS|ws)\]\s*Player:\s*(?<name>.+?)\s*\((?<id>[^)]+)\)\s*(?<stamp>\d+)\s*has\s+(?<state>connected|disconnected)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex GetRaidTimeRegex = new(@"/singleplayer/settings/getRaidTime\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RequestPathRegex = new(@"\[(?:Client|WebSocket)\s+Request\]\s*(?<path>/\S+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex NotifierWebSocketRequestRegex = new(@"^/notifierServer/getwebsocket/(?<id>[a-f0-9]+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex LocalStartRegex = new(@"\[Client Request\]\s*/client/match/local/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex HeadlessStartRegex = new(@"\[Client Request\]\s*/fika/raid/headless/start", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex HeadlessPlayerRegex = new(@"CoopHandler\]\s*AddClientToBotEnemies:\s*(?<name>.+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -973,11 +974,11 @@ public static class SptPlayerPresenceReader
     private const int MaxRecentEvents = 45;
 
     private static int _pendingSoloRaidStarts;
-    private static int _pendingRaidTimeRequests;
     private static bool _headlessStartAwaitingLocalStart;
     private static int _pendingHeadlessHostStarts;
     private static bool _headlessRaidLoading;
     private static bool _headlessReadyWaitingForRaid;
+    private static string _lastRequestPath = string.Empty;
     private static readonly HashSet<string> PendingHeadlessJoinPlayerKeys = new(StringComparer.OrdinalIgnoreCase);
     private static string _configuredLocalHeadlessPlayerId = string.Empty;
 
@@ -1290,10 +1291,24 @@ public static class SptPlayerPresenceReader
 
     private static void ProcessLogLine(string line)
     {
-        if (GetRaidTimeRegex.IsMatch(line))
+        var requestPathMatch = RequestPathRegex.Match(line);
+        if (requestPathMatch.Success)
         {
-            _pendingRaidTimeRequests++;
-            return;
+            var requestPath = requestPathMatch.Groups["path"].Value.Trim();
+            _lastRequestPath = requestPath;
+
+            var notifierMatch = NotifierWebSocketRequestRegex.Match(requestPath);
+            if (notifierMatch.Success)
+            {
+                var accountId = notifierMatch.Groups["id"].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(accountId))
+                {
+                    var (notifierPlayerKey, notifierPlayer) = GetOrCreateTrackedPlayer(accountId, string.Empty);
+                    notifierPlayer.AccountId = accountId;
+                    notifierPlayer.State = StateConnected;
+                    PendingHeadlessJoinPlayerKeys.Remove(notifierPlayerKey);
+                }
+            }
         }
 
         if (HeadlessStartRegex.IsMatch(line))
@@ -1365,10 +1380,10 @@ public static class SptPlayerPresenceReader
                     ? StateStartingRaid
                     : StateDisconnected;
             }
-            else if (_pendingRaidTimeRequests > 0)
+            else if (string.Equals(_lastRequestPath, "/singleplayer/settings/getRaidTime", StringComparison.OrdinalIgnoreCase))
             {
-                _pendingRaidTimeRequests--;
                 player.State = StateDisconnectedOrJoining;
+                _lastRequestPath = string.Empty;
                 if (_headlessRaidLoading)
                 {
                     PendingHeadlessJoinPlayerKeys.Add(playerKey);
@@ -1450,9 +1465,9 @@ public static class SptPlayerPresenceReader
         _pendingLineFragment = string.Empty;
         CachedRecentEvents.Clear();
         _pendingSoloRaidStarts = 0;
-        _pendingRaidTimeRequests = 0;
         _headlessStartAwaitingLocalStart = false;
         _pendingHeadlessHostStarts = 0;
+        _lastRequestPath = string.Empty;
     }
 
     private static void ResetHeadlessCache(bool markPlayersDisconnected)
@@ -1480,8 +1495,8 @@ public static class SptPlayerPresenceReader
         {
             CachedRecentEvents.Clear();
             _pendingSoloRaidStarts = 0;
-            _pendingRaidTimeRequests = 0;
             ResetHeadlessCache(markPlayersDisconnected: true);
+            _lastRequestPath = string.Empty;
 
             foreach (var player in CachedPlayers.Values)
             {
@@ -1764,7 +1779,7 @@ public static class SptPlayerPresenceReader
             if (CachedPlayers.TryGetValue(key, out var pendingPlayer)
                 && string.Equals(pendingPlayer.State, StateDisconnectedOrJoining, StringComparison.OrdinalIgnoreCase))
             {
-                pendingPlayer.State = StateDisconnected;
+                pendingPlayer.State = StateDisconnectedAfterHeadlessRaid;
             }
         }
     }
