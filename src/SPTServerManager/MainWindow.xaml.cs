@@ -12,6 +12,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using SQLitePCL;
 using SPTCoffee.Contracts.Models;
+using SPTServerManager.Models;
 using MessageBox = System.Windows.MessageBox;
 
 namespace SPTServerManager;
@@ -52,6 +53,8 @@ public partial class MainWindow : Window
 
     private readonly Dictionary<string, ModInfo> _pendingChanges = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ServerModInfo> _pendingServerChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _serverConfigConflictDecisions = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string>? _savedPreviewExcludedPaths;
     private bool _restartServersIfUpdateStartedOnline;
     private bool _isInitializingRestartCheckbox = true;
 
@@ -91,6 +94,7 @@ public partial class MainWindow : Window
     private const string ServerStateUpdateLocal = "update_local";
     private const string ServerStateDeleteLocal = "delete_local";
     private const string RestartServersAfterPendingUpdateSettingKey = "restart_servers_after_pending_update";
+    private const string PreviewExcludedPathsSettingKey = "preview_excluded_paths";
     private const int HeadlessAutoStartMaxAttempts = 3;
     private const int HeadlessStartupValidationSeconds = 10;
     private const int SptReadyProbeIntervalSeconds = 1;
@@ -2128,31 +2132,171 @@ ON CONFLICT(name) DO UPDATE SET
 
     private void AddMod_Click(object sender, RoutedEventArgs e)
     {
-        var editWindow = new ModEditWindow();
-        if (editWindow.ShowDialog() != true) return;
+        var picker = new OpenFileDialog
+        {
+            Title = "Select Mod File (ZIP or DLL)",
+            Filter = "ZIP Files (*.zip)|*.zip|DLL Files (*.dll)|*.dll|All Files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
 
+        if (picker.ShowDialog() != true)
+            return;
+
+        string? tempFilteredZipPath = null;
         try
         {
-            var newMod = editWindow.Result!;
-            if (!string.IsNullOrWhiteSpace(editWindow.SelectedFilePath))
-            {
-                newMod.FileName = StageClientPendingFile(editWindow.SelectedFilePath, newMod.FileName);
-            }
-            newMod.PendingChangeState = "add";
-            _pendingChanges[newMod.Name] = newMod;
+            var selectedFilePath = picker.FileName;
+            var detected = DetectModPackageFromFile(selectedFilePath);
+            var keepOldConfigs = false;
+            var serverModsWithConfigConflicts = new List<string>();
+            var excludedSourcePaths = new List<string>();
+            string? selectedPluginVersion = null;
+            string? selectedServerVersion = null;
 
-            var syncedServerMod = QueueServerPendingFromBundleZip(editWindow.SelectedFilePath, ServerStateAddBoth);
+            if (!string.IsNullOrWhiteSpace(selectedFilePath)
+                && !ShowIncomingFilePreview(selectedFilePath, detected.ClientModName, detected.ServerModName,
+                    out keepOldConfigs, out serverModsWithConfigConflicts, out excludedSourcePaths,
+                    out selectedPluginVersion, out selectedServerVersion))
+            {
+                return;
+            }
+
+            detected.ClientVersion = NormalizeVersionForStorage(selectedPluginVersion, detected.ClientVersion);
+            detected.ServerVersion = NormalizeVersionForStorage(selectedServerVersion, detected.ServerVersion);
+
+            if (!string.IsNullOrWhiteSpace(selectedFilePath)
+                && selectedFilePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                && excludedSourcePaths.Count > 0)
+            {
+                tempFilteredZipPath = CreateFilteredZipFromSelection(selectedFilePath, excludedSourcePaths);
+                selectedFilePath = tempFilteredZipPath;
+            }
+
+            foreach (var serverModWithConflict in serverModsWithConfigConflicts)
+            {
+                _serverConfigConflictDecisions[serverModWithConflict] = keepOldConfigs;
+            }
+
+            var queuedClient = false;
+            if (detected.HasClientMod)
+            {
+                queuedClient = QueueDetectedClientMod(selectedFilePath, detected);
+            }
+
+            string? syncedServerMod = null;
+            if (detected.HasServerMod)
+            {
+                syncedServerMod = QueueServerPendingFromBundleZip(selectedFilePath, ServerStateAddBoth, detected.ServerVersion);
+            }
+
+            if (!queuedClient && string.IsNullOrWhiteSpace(syncedServerMod))
+            {
+                MessageBox.Show("No plugin or server mod was detected in the selected file.", "Nothing Detected", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             RefreshModListView();
             RefreshServerModsListView();
             RefreshPendingChanges_Internal();
             SavePendingChangesToDatabase();
-            var syncText = string.IsNullOrWhiteSpace(syncedServerMod) ? string.Empty : $"\nSynced server mod: {syncedServerMod}";
-            MessageBox.Show($"Mod \"{newMod.Name}\" added to pending changes.{syncText}", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+
+            var queuedParts = new List<string>();
+            if (queuedClient && !string.IsNullOrWhiteSpace(detected.ClientModName))
+                queuedParts.Add($"Plugin: {detected.ClientModName}");
+            if (!string.IsNullOrWhiteSpace(syncedServerMod))
+                queuedParts.Add($"Server Mod: {syncedServerMod}");
+
+            MessageBox.Show(
+                "Queued pending change(s):\n - " + string.Join("\n - ", queuedParts),
+                "Success",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+
         }
         catch (Exception ex)
         {
             MessageBox.Show("Failed to add mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(tempFilteredZipPath) && File.Exists(tempFilteredZipPath))
+            {
+                File.Delete(tempFilteredZipPath);
+            }
+        }
+    }
+
+    private sealed class DetectedModPackage
+    {
+        public string? ClientModName { get; set; }
+        public bool IsClientFolderMod { get; set; }
+        public string ClientVersion { get; set; } = string.Empty;
+        public string? ServerModName { get; set; }
+        public string ServerVersion { get; set; } = string.Empty;
+        public bool HasClientMod => !string.IsNullOrWhiteSpace(ClientModName);
+        public bool HasServerMod => !string.IsNullOrWhiteSpace(ServerModName);
+    }
+
+    private static DetectedModPackage DetectModPackageFromFile(string filePath)
+    {
+        var result = new DetectedModPackage();
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return result;
+
+        if (filePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            result.ClientModName = Path.GetFileNameWithoutExtension(filePath);
+            result.IsClientFolderMod = false;
+            result.ClientVersion = FileVersionInfo.GetVersionInfo(filePath).FileVersion ?? "0.0.0";
+            return result;
+        }
+
+        if (!filePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            return result;
+
+        var bundle = InspectBundleZip(filePath);
+        result.ClientModName = bundle.ClientModName;
+        result.IsClientFolderMod = bundle.IsClientFolderMod ?? true;
+        result.ClientVersion = TryExtractPluginVersionFromZip(filePath, bundle.ClientModName) ?? string.Empty;
+        result.ServerModName = bundle.ServerModName;
+        result.ServerVersion = bundle.ServerModVersion ?? string.Empty;
+        return result;
+    }
+
+    private bool QueueDetectedClientMod(string packagePath, DetectedModPackage detected)
+    {
+        if (!detected.HasClientMod || string.IsNullOrWhiteSpace(detected.ClientModName))
+            return false;
+
+        var existingMod = TryGetCurrentClientMod(detected.ClientModName);
+        var stagedFileName = StageClientPendingFile(packagePath, Path.GetFileName(packagePath));
+
+        if (existingMod != null)
+        {
+            var pendingUpdate = CloneModInfo(existingMod);
+            pendingUpdate.Name = detected.ClientModName;
+            pendingUpdate.FileName = stagedFileName;
+            pendingUpdate.IsFolderMod = detected.IsClientFolderMod;
+            pendingUpdate.PendingChangeState = "update";
+            pendingUpdate.NewVersion = NormalizeVersionForStorage(detected.ClientVersion, pendingUpdate.Version);
+            _pendingChanges[pendingUpdate.Name] = pendingUpdate;
+            return true;
+        }
+
+        _pendingChanges[detected.ClientModName] = new ModInfo
+        {
+            Name = detected.ClientModName,
+            Version = NormalizeVersionForStorage(detected.ClientVersion, "0.0.0"),
+            FileName = stagedFileName,
+            IsFolderMod = detected.IsClientFolderMod,
+            AllowOnHeadless = false,
+            IsOptional = false,
+            OptionalDefaultState = false,
+            PendingChangeState = "add",
+            NewVersion = null
+        };
+        return true;
     }
 
     private void EditMod_Click(object sender, RoutedEventArgs e)
@@ -2251,26 +2395,62 @@ ON CONFLICT(name) DO UPDATE SET
         var updateWindow = new UpdateModWindow(selected);
         if (updateWindow.ShowDialog() != true) return;
 
+        string? tempFilteredZipPath = null;
         try
         {
             var updatedMod = updateWindow.Result!;
-            if (updatedMod.NewVersion == null || string.Equals(updatedMod.NewVersion, selected.Version, StringComparison.OrdinalIgnoreCase))
+            var selectedFilePath = updateWindow.SelectedFilePath;
+            var normalizedNewVersion = NormalizeVersionForStorage(updatedMod.NewVersion, selected.Version);
+            string? selectedServerVersion = null;
+
+            if (!string.IsNullOrWhiteSpace(selectedFilePath))
             {
-                MessageBox.Show("The new version is the same as the current version.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                if (!ShowIncomingFilePreview(selectedFilePath, updatedMod.Name, null,
+                        out var keepOldConfigs, out var serverModsWithConfigConflicts, out var excludedSourcePaths,
+                        out var selectedPluginVersion, out selectedServerVersion))
+                {
+                    return;
+                }
+
+                normalizedNewVersion = NormalizeVersionForStorage(selectedPluginVersion, normalizedNewVersion);
+
+                foreach (var serverModWithConflict in serverModsWithConfigConflicts)
+                {
+                    _serverConfigConflictDecisions[serverModWithConflict] = keepOldConfigs;
+                }
+
+                if (!string.IsNullOrWhiteSpace(selectedFilePath)
+                    && selectedFilePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                    && excludedSourcePaths.Count > 0)
+                {
+                    tempFilteredZipPath = CreateFilteredZipFromSelection(selectedFilePath, excludedSourcePaths);
+                    selectedFilePath = tempFilteredZipPath;
+                }
+
+                if (!string.IsNullOrWhiteSpace(selectedFilePath))
+                {
+                    updatedMod.FileName = StageClientPendingFile(selectedFilePath, updatedMod.FileName);
+                }
             }
 
-            if (!string.IsNullOrWhiteSpace(updateWindow.SelectedFilePath))
+            if (string.Equals(normalizedNewVersion, selected.Version, StringComparison.OrdinalIgnoreCase))
             {
-                updatedMod.FileName = StageClientPendingFile(updateWindow.SelectedFilePath, updatedMod.FileName);
+                var keepSameVersion = MessageBox.Show(
+                    $"Plugin new version is the same as old version ({selected.Version}). Continue anyway?",
+                    "Same Version Detected",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (keepSameVersion != MessageBoxResult.Yes)
+                    return;
             }
 
             // Mark as update pending
             updatedMod.PendingChangeState = "update";
-            updatedMod.NewVersion = updateWindow.Result!.NewVersion;
+            updatedMod.NewVersion = normalizedNewVersion;
             _pendingChanges[selected.Name] = updatedMod;
 
-            var syncedServerMod = QueueServerPendingFromBundleZip(updateWindow.SelectedFilePath, ServerStateUpdateBoth);
+            var syncedServerMod = QueueServerPendingFromBundleZip(selectedFilePath, ServerStateUpdateBoth, selectedServerVersion);
             RefreshModListView();
             RefreshServerModsListView();
             RefreshPendingChanges_Internal();
@@ -2281,6 +2461,13 @@ ON CONFLICT(name) DO UPDATE SET
         catch (Exception ex)
         {
             MessageBox.Show("Failed to update mod: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(tempFilteredZipPath) && File.Exists(tempFilteredZipPath))
+            {
+                File.Delete(tempFilteredZipPath);
+            }
         }
     }
 
@@ -3110,6 +3297,7 @@ ON CONFLICT(file_name) DO UPDATE SET
             MigratePendingChangesSchema(connection);
 
             _pendingChanges.Clear();
+            _serverConfigConflictDecisions.Clear();
 
             var dbMods = LoadModsFromDatabase(connection).ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -3494,6 +3682,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             {
                 if (mod.PendingChangeState == "add")
                 {
+                    mod.Version = NormalizeVersionForStorage(mod.Version, "0.0.0");
                     EnsureClientPendingFileInStorage(mod);
                     UpsertModInDatabase(connection, mod);
                 }
@@ -3507,7 +3696,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                     if (!string.IsNullOrWhiteSpace(mod.NewVersion))
                     {
                         EnsureClientPendingFileInStorage(mod);
-                        mod.Version = mod.NewVersion;
+                        mod.Version = NormalizeVersionForStorage(mod.NewVersion, NormalizeVersionForStorage(mod.Version, "0.0.0"));
                         mod.NewVersion = null; // Clear the new version after applying
                         UpsertModInDatabase(connection, mod);
                     }
@@ -3564,6 +3753,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             // Clear pending changes
             _pendingChanges.Clear();
             _pendingServerChanges.Clear();
+            _serverConfigConflictDecisions.Clear();
             SavePendingChangesToDatabase();
             SaveServerPendingChangesToDatabase();
             ClearPendingTempStorage();
@@ -3677,8 +3867,7 @@ ON CONFLICT(name) DO UPDATE SET
     private void UpsertServerModFromPending(SqliteConnection connection, ServerModInfo mod, string fallbackName)
     {
         var targetVersion = string.IsNullOrWhiteSpace(mod.NewVersion) ? mod.Version : mod.NewVersion!;
-        if (string.IsNullOrWhiteSpace(targetVersion))
-            targetVersion = "0.0.0";
+        targetVersion = NormalizeVersionForStorage(targetVersion, "0.0.0");
 
         var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
         var targetFileName = EnsureServerModZipExistsForDatabase(targetName, mod.FileName);
@@ -3742,6 +3931,9 @@ ON CONFLICT(name) DO UPDATE SET
         var tempTargetFolder = Path.Combine(tempExtractRoot, targetName + "_" + Guid.NewGuid().ToString("N"));
         ZipFile.ExtractToDirectory(zipPath, tempTargetFolder);
 
+        var configConflictPaths = GetConfigConflictRelativePaths(tempTargetFolder, targetFolder);
+        var keepOldConfigFiles = ResolveServerConfigConflictDecision(targetName, configConflictPaths);
+
         var backupFolder = Path.Combine(tempExtractRoot, targetName + "_backup_" + Guid.NewGuid().ToString("N"));
         if (Directory.Exists(targetFolder))
         {
@@ -3752,8 +3944,74 @@ ON CONFLICT(name) DO UPDATE SET
 
         Directory.Move(tempTargetFolder, targetFolder);
 
+        if (keepOldConfigFiles && Directory.Exists(backupFolder) && configConflictPaths.Count > 0)
+        {
+            RestoreOldConfigFiles(backupFolder, targetFolder, configConflictPaths);
+        }
+
         if (Directory.Exists(backupFolder))
             Directory.Delete(backupFolder, true);
+    }
+
+    private static List<string> GetConfigConflictRelativePaths(string incomingRoot, string existingRoot)
+    {
+        var conflicts = new List<string>();
+        if (!Directory.Exists(incomingRoot) || !Directory.Exists(existingRoot))
+            return conflicts;
+
+        foreach (var incomingFile in Directory.GetFiles(incomingRoot, "*", SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(incomingRoot, incomingFile);
+            if (!IsConfigLikePath(relativePath))
+                continue;
+
+            var existingFile = Path.Combine(existingRoot, relativePath);
+            if (File.Exists(existingFile))
+                conflicts.Add(relativePath);
+        }
+
+        return conflicts;
+    }
+
+    private bool ResolveServerConfigConflictDecision(string modName, IReadOnlyCollection<string> conflictPaths)
+    {
+        if (conflictPaths.Count == 0)
+            return false;
+
+        if (_serverConfigConflictDecisions.TryGetValue(modName, out var preselectedDecision))
+            return preselectedDecision;
+
+        var examples = string.Join("\n", conflictPaths.Take(5).Select(p => " - " + p.Replace('\\', '/')));
+        if (conflictPaths.Count > 5)
+            examples += $"\n - ...and {conflictPaths.Count - 5} more";
+
+        var result = MessageBox.Show(
+            $"Mod '{modName}' has {conflictPaths.Count} config file conflict(s):\n\n{examples}\n\n" +
+            "Yes = keep old config files\nNo = override with new files",
+            "Config Conflict Detected",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        var keepOld = result == MessageBoxResult.Yes;
+        _serverConfigConflictDecisions[modName] = keepOld;
+        return keepOld;
+    }
+
+    private static void RestoreOldConfigFiles(string backupRoot, string targetRoot, IEnumerable<string> relativeConfigPaths)
+    {
+        foreach (var relativePath in relativeConfigPaths)
+        {
+            var backupFile = Path.Combine(backupRoot, relativePath);
+            if (!File.Exists(backupFile))
+                continue;
+
+            var targetFile = Path.Combine(targetRoot, relativePath);
+            var targetDirectory = Path.GetDirectoryName(targetFile);
+            if (!string.IsNullOrWhiteSpace(targetDirectory))
+                Directory.CreateDirectory(targetDirectory);
+
+            File.Copy(backupFile, targetFile, true);
+        }
     }
 
     private void RemoveLocalServerMod(string modName)
@@ -3936,6 +4194,46 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     result.ServerModVersion = TryReadVersionFromPackageJson(entry);
                 }
+
+                // Fallback server-mod detection for ZIPs that are already rooted at <ServerModName>/...
+                if (result.ServerModName == null
+                    && string.Equals(Path.GetFileName(fullName), "package.json", StringComparison.OrdinalIgnoreCase)
+                    && !segments.Any(s => string.Equals(s, "BepInEx", StringComparison.OrdinalIgnoreCase)))
+                {
+                    string? candidateName = null;
+
+                    if (segments.Length >= 2)
+                    {
+                        candidateName = segments[^2];
+                        if (string.Equals(candidateName, "user", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(candidateName, "mods", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(candidateName, "SPT", StringComparison.OrdinalIgnoreCase))
+                        {
+                            candidateName = null;
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(candidateName))
+                    {
+                        candidateName = TryReadNameFromPackageJson(entry);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(candidateName))
+                    {
+                        result.ServerModName = candidateName;
+                        result.ServerModVersion = TryReadVersionFromPackageJson(entry);
+                    }
+                }
+            }
+
+            if (result.ServerModName == null)
+            {
+                var fallbackVersion = ExtractServerModVersionFromZip(zipPath);
+                if (!string.Equals(fallbackVersion, "0.0.0", StringComparison.OrdinalIgnoreCase))
+                {
+                    result.ServerModName = Path.GetFileNameWithoutExtension(zipPath);
+                    result.ServerModVersion = fallbackVersion;
+                }
             }
         }
         catch
@@ -4001,7 +4299,543 @@ ON CONFLICT(name) DO UPDATE SET
         return null;
     }
 
-    private string? QueueServerPendingFromBundleZip(string? zipPath, string serverPendingState)
+    private static string? TryReadNameFromPackageJson(ZipArchiveEntry entry)
+    {
+        try
+        {
+            using var stream = entry.Open();
+            using var reader = new StreamReader(stream);
+            using var doc = JsonDocument.Parse(reader.ReadToEnd());
+            if (doc.RootElement.TryGetProperty("name", out var nameProperty))
+            {
+                return nameProperty.GetString();
+            }
+        }
+        catch
+        {
+            // Ignore malformed package.json in bundle detection.
+        }
+
+        return null;
+    }
+
+    private sealed class IncomingPackagePreview
+    {
+        public List<FileChangePreviewItem> Files { get; } = new();
+        public bool HasConfigConflicts { get; set; }
+        public HashSet<string> ServerModsWithConfigConflicts { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string ActionSummary { get; set; } = "Pending file changes";
+        public string DetectedType { get; set; } = "Unknown";
+        public string? DetectedPluginName { get; set; }
+        public string? DetectedServerModName { get; set; }
+        public string PluginAction { get; set; } = "None";
+        public string? PluginOldVersion { get; set; }
+        public string? PluginNewVersion { get; set; }
+        public string ServerAction { get; set; } = "None";
+        public string? ServerOldVersion { get; set; }
+        public string? ServerNewVersion { get; set; }
+    }
+
+    private bool ShowIncomingFilePreview(
+        string sourcePath,
+        string? fallbackClientModName,
+        string? fallbackServerModName,
+        out bool keepOldConfigs,
+        out List<string> serverModsWithConfigConflicts,
+        out List<string> excludedSourcePaths,
+        out string? selectedPluginVersion,
+        out string? selectedServerVersion)
+    {
+        keepOldConfigs = false;
+        serverModsWithConfigConflicts = new List<string>();
+        excludedSourcePaths = new List<string>();
+        selectedPluginVersion = null;
+        selectedServerVersion = null;
+
+        var preview = BuildIncomingPackagePreview(sourcePath, fallbackClientModName, fallbackServerModName);
+        if (preview.Files.Count == 0)
+            return true;
+
+        var savedExcludedPaths = LoadSavedPreviewExcludedPaths();
+        foreach (var item in preview.Files)
+        {
+            if (savedExcludedPaths.Contains(NormalizeArchivePath(item.SourceRelativePath)))
+            {
+                item.IsIncluded = false;
+            }
+        }
+
+        var window = new FileChangePreviewWindow(
+            preview.Files,
+            preview.HasConfigConflicts,
+            preview.ActionSummary,
+            preview.DetectedType,
+            preview.DetectedPluginName,
+            preview.DetectedServerModName,
+            preview.PluginAction,
+            preview.PluginOldVersion,
+            preview.PluginNewVersion,
+            preview.ServerAction,
+            preview.ServerOldVersion,
+            preview.ServerNewVersion)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true)
+            return false;
+
+        keepOldConfigs = window.KeepOldConfigFiles;
+        serverModsWithConfigConflicts = preview.ServerModsWithConfigConflicts.ToList();
+        excludedSourcePaths = window.ExcludedSourcePaths.ToList();
+        selectedPluginVersion = window.SelectedPluginVersion;
+        selectedServerVersion = window.SelectedServerVersion;
+        SavePreviewExcludedPaths(excludedSourcePaths);
+        return true;
+    }
+
+    private HashSet<string> LoadSavedPreviewExcludedPaths()
+    {
+        if (_savedPreviewExcludedPaths != null)
+            return _savedPreviewExcludedPaths;
+
+        _savedPreviewExcludedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(_databasePath) || !File.Exists(_databasePath))
+            return _savedPreviewExcludedPaths;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            var raw = GetSetting(connection, PreviewExcludedPathsSettingKey);
+            if (string.IsNullOrWhiteSpace(raw))
+                return _savedPreviewExcludedPaths;
+
+            var values = JsonSerializer.Deserialize<List<string>>(raw) ?? new List<string>();
+            _savedPreviewExcludedPaths = new HashSet<string>(
+                values
+                    .Where(v => !string.IsNullOrWhiteSpace(v))
+                    .Select(NormalizeArchivePath),
+                StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            _savedPreviewExcludedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return _savedPreviewExcludedPaths;
+    }
+
+    private void SavePreviewExcludedPaths(IEnumerable<string> excludedSourcePaths)
+    {
+        var normalized = excludedSourcePaths
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(NormalizeArchivePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _savedPreviewExcludedPaths = new HashSet<string>(normalized, StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(_databasePath))
+            return;
+
+        try
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+
+            var json = JsonSerializer.Serialize(normalized);
+            UpsertSetting(connection, PreviewExcludedPathsSettingKey, json);
+        }
+        catch
+        {
+            // Keep preview flow non-blocking if settings persistence fails.
+        }
+    }
+
+    private IncomingPackagePreview BuildIncomingPackagePreview(string sourcePath, string? fallbackClientModName, string? fallbackServerModName)
+    {
+        var preview = new IncomingPackagePreview();
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            return preview;
+
+        if (sourcePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            preview.DetectedType = "Plugin";
+            preview.DetectedPluginName = string.IsNullOrWhiteSpace(fallbackClientModName)
+                ? Path.GetFileNameWithoutExtension(sourcePath)
+                : fallbackClientModName;
+
+            var pluginCurrent = !string.IsNullOrWhiteSpace(preview.DetectedPluginName)
+                ? TryGetCurrentClientMod(preview.DetectedPluginName)
+                : null;
+            var detectedPluginVersion = FileVersionInfo.GetVersionInfo(sourcePath).FileVersion;
+            preview.PluginOldVersion = pluginCurrent?.Version;
+            preview.PluginNewVersion = NormalizeVersionForStorage(detectedPluginVersion, pluginCurrent?.Version ?? "0.0.0");
+            preview.PluginAction = pluginCurrent == null ? "Add" : "Update";
+            preview.ServerAction = "None";
+            preview.ActionSummary = $"Plugin: {preview.PluginAction}";
+
+            var fileName = Path.GetFileName(sourcePath);
+            var existsInOld = ClientFileExistsInOld(fileName);
+            var relativePath = fileName;
+            preview.Files.Add(new FileChangePreviewItem
+            {
+                FileType = "Plugin",
+                FileName = fileName,
+                Location = ".",
+                ExistsInOld = existsInOld,
+                SourceRelativePath = fileName
+            });
+
+            if (existsInOld && IsConfigLikePath(relativePath))
+                preview.HasConfigConflicts = true;
+
+            return preview;
+        }
+
+        if (!sourcePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            return preview;
+
+        var detectedFromBundle = InspectBundleZip(sourcePath);
+        preview.DetectedPluginName = string.IsNullOrWhiteSpace(detectedFromBundle.ClientModName)
+            ? fallbackClientModName
+            : detectedFromBundle.ClientModName;
+        preview.DetectedServerModName = string.IsNullOrWhiteSpace(detectedFromBundle.ServerModName)
+            ? fallbackServerModName
+            : detectedFromBundle.ServerModName;
+        preview.DetectedType = !string.IsNullOrWhiteSpace(preview.DetectedPluginName) && !string.IsNullOrWhiteSpace(preview.DetectedServerModName)
+            ? "Both"
+            : !string.IsNullOrWhiteSpace(preview.DetectedPluginName)
+                ? "Plugin"
+                : !string.IsNullOrWhiteSpace(preview.DetectedServerModName)
+                    ? "Server Mod"
+                    : "Unknown";
+
+        var currentClient = !string.IsNullOrWhiteSpace(preview.DetectedPluginName)
+            ? TryGetCurrentClientMod(preview.DetectedPluginName)
+            : null;
+        var currentServerVersion = !string.IsNullOrWhiteSpace(preview.DetectedServerModName)
+            ? GetCurrentServerVersionForPending(preview.DetectedServerModName)
+            : string.Empty;
+        var detectedServerVersion = !string.IsNullOrWhiteSpace(detectedFromBundle.ServerModVersion)
+            ? detectedFromBundle.ServerModVersion
+            : ExtractServerModVersionFromZip(sourcePath);
+        var detectedPluginVersionFromZip = TryExtractPluginVersionFromZip(sourcePath, preview.DetectedPluginName);
+
+        preview.PluginOldVersion = currentClient?.Version;
+        preview.PluginNewVersion = NormalizeVersionForStorage(detectedPluginVersionFromZip, currentClient?.Version ?? "0.0.0");
+        preview.PluginAction = string.IsNullOrWhiteSpace(preview.DetectedPluginName)
+            ? "None"
+            : currentClient == null ? "Add" : "Update";
+
+        preview.ServerOldVersion = currentServerVersion;
+        preview.ServerNewVersion = NormalizeVersionForStorage(detectedServerVersion, string.IsNullOrWhiteSpace(currentServerVersion) ? "0.0.0" : currentServerVersion);
+        preview.ServerAction = string.IsNullOrWhiteSpace(preview.DetectedServerModName)
+            ? "None"
+            : string.IsNullOrWhiteSpace(currentServerVersion) ? "Add" : "Update";
+
+        if (string.Equals(preview.PluginAction, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            preview.PluginOldVersion = null;
+            preview.PluginNewVersion = null;
+        }
+
+        if (string.Equals(preview.ServerAction, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            preview.ServerOldVersion = null;
+            preview.ServerNewVersion = null;
+        }
+
+        var actionParts = new List<string>();
+        if (!string.Equals(preview.PluginAction, "None", StringComparison.OrdinalIgnoreCase))
+            actionParts.Add($"Plugin: {preview.PluginAction}");
+        if (!string.Equals(preview.ServerAction, "None", StringComparison.OrdinalIgnoreCase))
+            actionParts.Add($"Server Mod: {preview.ServerAction}");
+        preview.ActionSummary = actionParts.Count == 0 ? "No detected add/update action" : string.Join(" | ", actionParts);
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(sourcePath);
+            foreach (var entry in archive.Entries)
+            {
+                var normalized = entry.FullName.Replace('\\', '/').Trim('/');
+                if (string.IsNullOrWhiteSpace(normalized) || normalized.EndsWith("/", StringComparison.Ordinal))
+                    continue;
+
+                var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length == 0)
+                    continue;
+
+                if (IsStructureOnlyArchivePath(segments))
+                    continue;
+
+                if (TryFindPathIndex(segments, "BepInEx", "plugins", out var pluginIndex) && pluginIndex + 2 < segments.Length)
+                {
+                    var pluginSegment = segments[pluginIndex + 2];
+                    var isDirectDll = pluginSegment.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+                    if (!isDirectDll && segments.Length == pluginIndex + 3)
+                        continue;
+
+                    var relativeUnderPlugins = string.Join(Path.DirectorySeparatorChar.ToString(), segments.Skip(pluginIndex + 2));
+                    var relativeUnderPlugin = isDirectDll
+                        ? string.Join('/', segments.Skip(pluginIndex + 2))
+                        : string.Join('/', segments.Skip(pluginIndex + 3));
+
+                    var locationParts = relativeUnderPlugin.Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    if (locationParts.Count > 0)
+                        locationParts.RemoveAt(locationParts.Count - 1);
+                    var location = locationParts.Count == 0 ? "." : string.Join('/', locationParts);
+
+                    var existsInOld = ClientFileExistsInOld(relativeUnderPlugins);
+                    preview.Files.Add(new FileChangePreviewItem
+                    {
+                        FileType = "Plugin",
+                        FileName = Path.GetFileName(normalized),
+                        Location = location,
+                        ExistsInOld = existsInOld,
+                        SourceRelativePath = normalized
+                    });
+
+                    if (existsInOld && IsConfigLikePath(relativeUnderPlugin))
+                        preview.HasConfigConflicts = true;
+
+                    continue;
+                }
+
+                if (TryFindPathIndex(segments, "SPT", "user", "mods", out var serverIndex) && serverIndex + 3 < segments.Length)
+                {
+                    var serverModName = segments[serverIndex + 3];
+                    var relativeUnderMod = string.Join('/', segments.Skip(serverIndex + 4));
+                    if (string.IsNullOrWhiteSpace(relativeUnderMod))
+                        continue;
+
+                    var locationParts = relativeUnderMod.Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    if (locationParts.Count > 0)
+                        locationParts.RemoveAt(locationParts.Count - 1);
+                    var location = locationParts.Count == 0 ? "." : string.Join('/', locationParts);
+                    var oldPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", serverModName,
+                        string.Join(Path.DirectorySeparatorChar.ToString(), segments.Skip(serverIndex + 4)));
+                    var existsInOld = File.Exists(oldPath);
+
+                    preview.Files.Add(new FileChangePreviewItem
+                    {
+                        FileType = "Server Mod",
+                        FileName = Path.GetFileName(normalized),
+                        Location = location,
+                        ExistsInOld = existsInOld,
+                        SourceRelativePath = normalized
+                    });
+
+                    if (existsInOld && IsConfigLikePath(relativeUnderMod))
+                    {
+                        preview.HasConfigConflicts = true;
+                        preview.ServerModsWithConfigConflicts.Add(serverModName);
+                    }
+
+                    continue;
+                }
+
+                preview.Files.Add(new FileChangePreviewItem
+                {
+                    FileType = "Other",
+                    FileName = Path.GetFileName(normalized),
+                    Location = ".",
+                    ExistsInOld = false,
+                    SourceRelativePath = normalized
+                });
+            }
+        }
+        catch
+        {
+            // If preview parsing fails we continue without blocking queueing.
+        }
+
+        if (preview.ServerModsWithConfigConflicts.Count == 0 && !string.IsNullOrWhiteSpace(fallbackServerModName) && preview.HasConfigConflicts)
+        {
+            preview.ServerModsWithConfigConflicts.Add(fallbackServerModName);
+        }
+
+        return preview;
+    }
+
+    private static string CreateFilteredZipFromSelection(string sourceZipPath, IReadOnlyCollection<string> excludedSourcePaths)
+    {
+        var excluded = new HashSet<string>(excludedSourcePaths.Select(NormalizeArchivePath), StringComparer.OrdinalIgnoreCase);
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_filtered_{Guid.NewGuid():N}.zip");
+
+        using (var sourceArchive = ZipFile.OpenRead(sourceZipPath))
+        using (var targetArchive = ZipFile.Open(tempZipPath, ZipArchiveMode.Create))
+        {
+            var includedFiles = 0;
+
+            foreach (var sourceEntry in sourceArchive.Entries)
+            {
+                var normalized = NormalizeArchivePath(sourceEntry.FullName);
+                if (string.IsNullOrWhiteSpace(normalized) || normalized.EndsWith("/", StringComparison.Ordinal))
+                    continue;
+
+                if (excluded.Contains(normalized))
+                    continue;
+
+                var targetEntry = targetArchive.CreateEntry(sourceEntry.FullName, CompressionLevel.Optimal);
+                using var sourceStream = sourceEntry.Open();
+                using var targetStream = targetEntry.Open();
+                sourceStream.CopyTo(targetStream);
+                includedFiles++;
+            }
+
+            if (includedFiles == 0)
+                throw new InvalidOperationException("No files left after exclusions. Select at least one file.");
+        }
+
+        return tempZipPath;
+    }
+
+    private static string NormalizeArchivePath(string path)
+    {
+        return path.Replace('\\', '/').Trim('/');
+    }
+
+    private static bool IsVersionPlaceholder(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        return string.Equals(value, "custom", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(value, "unknown", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(value, "-", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeVersionForStorage(string? rawVersion, string fallback)
+    {
+        return IsVersionPlaceholder(rawVersion) ? fallback : rawVersion!.Trim();
+    }
+
+    private static bool IsStructureOnlyArchivePath(string[] segments)
+    {
+        if (segments.Length == 1)
+        {
+            return string.Equals(segments[0], "BepInEx", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(segments[0], "plugins", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(segments[0], "SPT", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(segments[0], "user", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(segments[0], "mods", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (segments.Length == 2)
+        {
+            return (string.Equals(segments[0], "BepInEx", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(segments[1], "plugins", StringComparison.OrdinalIgnoreCase))
+                   || (string.Equals(segments[0], "SPT", StringComparison.OrdinalIgnoreCase)
+                       && string.Equals(segments[1], "user", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (segments.Length == 3)
+        {
+            return string.Equals(segments[0], "SPT", StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(segments[1], "user", StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(segments[2], "mods", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
+    private bool ClientFileExistsInOld(string relativeUnderPlugins)
+    {
+        var pluginCandidates = new List<string>
+        {
+            Path.Combine(Config.SptServerFolder, "BepInEx", "plugins")
+        };
+
+        if (!string.IsNullOrWhiteSpace(Config.AdditionalModsPath))
+        {
+            pluginCandidates.Add(Path.Combine(Config.AdditionalModsPath, "BepInEx", "plugins"));
+        }
+
+        foreach (var pluginRoot in pluginCandidates)
+        {
+            var oldPath = Path.Combine(pluginRoot, relativeUnderPlugins.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(oldPath))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsConfigLikePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+            return false;
+
+        var normalized = relativePath.Replace('\\', '/');
+        var fileName = Path.GetFileName(normalized);
+        var extension = Path.GetExtension(fileName);
+
+        if (fileName.Contains("config", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (normalized.Contains("/config/", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return extension.Equals(".cfg", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".json", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".toml", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".yaml", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".yml", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".ini", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryFindPathIndex(string[] segments, string first, string second, out int index)
+    {
+        for (var i = 0; i <= segments.Length - 2; i++)
+        {
+            if (string.Equals(segments[i], first, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 1], second, StringComparison.OrdinalIgnoreCase))
+            {
+                index = i;
+                return true;
+            }
+        }
+
+        index = -1;
+        return false;
+    }
+
+    private static bool TryFindPathIndex(string[] segments, string first, string second, string third, out int index)
+    {
+        for (var i = 0; i <= segments.Length - 3; i++)
+        {
+            if (string.Equals(segments[i], first, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 1], second, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(segments[i + 2], third, StringComparison.OrdinalIgnoreCase))
+            {
+                index = i;
+                return true;
+            }
+        }
+
+        index = -1;
+        return false;
+    }
+
+    private static string PromoteServerStateToUpdate(string state)
+    {
+        if (string.Equals(state, ServerStateAddBoth, StringComparison.OrdinalIgnoreCase))
+            return ServerStateUpdateBoth;
+        if (string.Equals(state, ServerStateAddDb, StringComparison.OrdinalIgnoreCase))
+            return ServerStateUpdateDb;
+        if (string.Equals(state, ServerStateAddLocal, StringComparison.OrdinalIgnoreCase))
+            return ServerStateUpdateLocal;
+        if (string.Equals(state, "add", StringComparison.OrdinalIgnoreCase))
+            return "update";
+        return state;
+    }
+
+    private string? QueueServerPendingFromBundleZip(string? zipPath, string serverPendingState, string? overrideServerVersion = null)
     {
         if (string.IsNullOrWhiteSpace(zipPath)
             || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
@@ -4019,15 +4853,21 @@ ON CONFLICT(name) DO UPDATE SET
         var serverVersion = string.IsNullOrWhiteSpace(bundle.ServerModVersion)
             ? ExtractServerModVersionFromZip(storedZipPath)
             : bundle.ServerModVersion!;
+        if (!string.IsNullOrWhiteSpace(overrideServerVersion))
+            serverVersion = overrideServerVersion;
 
         var oldVersion = GetCurrentServerVersionForPending(bundle.ServerModName);
+        serverVersion = NormalizeVersionForStorage(serverVersion, string.IsNullOrWhiteSpace(oldVersion) ? "0.0.0" : oldVersion);
+        var effectiveServerState = string.IsNullOrWhiteSpace(oldVersion)
+            ? serverPendingState
+            : PromoteServerStateToUpdate(serverPendingState);
         _pendingServerChanges[bundle.ServerModName] = new ServerModInfo
         {
             Name = bundle.ServerModName,
             Version = oldVersion,
             NewVersion = serverVersion,
             FileName = storedFileName,
-            PendingChangeState = serverPendingState
+            PendingChangeState = effectiveServerState
         };
 
         return bundle.ServerModName;
@@ -4058,7 +4898,7 @@ ON CONFLICT(name) DO UPDATE SET
         return string.Empty;
     }
 
-    private void QueueClientPendingFromBundleZip(string zipPath, string clientPendingState)
+    private void QueueClientPendingFromBundleZip(string zipPath, string clientPendingState, string? overridePluginVersion = null)
     {
         if (string.IsNullOrWhiteSpace(zipPath)
             || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
@@ -4071,12 +4911,13 @@ ON CONFLICT(name) DO UPDATE SET
         if (string.IsNullOrWhiteSpace(bundle.ClientModName))
             return;
 
+        var detectedPluginVersion = NormalizeVersionForStorage(overridePluginVersion, TryExtractPluginVersionFromZip(zipPath, bundle.ClientModName) ?? string.Empty);
         var existingClient = TryGetCurrentClientMod(bundle.ClientModName);
         var isFolderMod = bundle.IsClientFolderMod ?? true; // default true for ZIPs when uncertain
         var pendingClient = existingClient ?? new ModInfo
         {
             Name = bundle.ClientModName,
-            Version = "custom",
+            Version = existingClient?.Version ?? "0.0.0",
             IsFolderMod = isFolderMod,
             AllowOnHeadless = false,
             IsOptional = false,
@@ -4087,17 +4928,22 @@ ON CONFLICT(name) DO UPDATE SET
         pendingClient.IsFolderMod = isFolderMod;
         pendingClient.FileName = StageClientPendingFile(zipPath, Path.GetFileName(zipPath));
 
-        if (string.Equals(clientPendingState, "update", StringComparison.OrdinalIgnoreCase) && existingClient != null)
+        var shouldQueueAsUpdate = existingClient != null
+                                  && (string.Equals(clientPendingState, "update", StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(clientPendingState, "add", StringComparison.OrdinalIgnoreCase));
+
+        if (shouldQueueAsUpdate)
         {
             pendingClient.PendingChangeState = "update";
-            pendingClient.NewVersion = "custom";
+            pendingClient.NewVersion = NormalizeVersionForStorage(detectedPluginVersion, NormalizeVersionForStorage(pendingClient.Version, "0.0.0"));
+            if (string.IsNullOrWhiteSpace(pendingClient.Version))
+                pendingClient.Version = "0.0.0";
         }
         else
         {
             pendingClient.PendingChangeState = "add";
             pendingClient.NewVersion = null;
-            if (string.IsNullOrWhiteSpace(pendingClient.Version))
-                pendingClient.Version = "custom";
+            pendingClient.Version = NormalizeVersionForStorage(detectedPluginVersion, NormalizeVersionForStorage(pendingClient.Version, "0.0.0"));
         }
 
         _pendingChanges[pendingClient.Name] = pendingClient;
@@ -4160,6 +5006,7 @@ ON CONFLICT(name) DO UPDATE SET
     private bool TryQueueServerChangeFromZip(ServerModViewModel selected, string pendingState, string oldVersion, out bool canceled)
     {
         canceled = false;
+        string? tempFilteredZipPath = null;
 
         var picker = new OpenFileDialog
         {
@@ -4176,41 +5023,89 @@ ON CONFLICT(name) DO UPDATE SET
             return false;
         }
 
-        var storedFileName = CopyServerModZipToStorage(picker.FileName);
-        var storedZipPath = ResolvePendingServerZipPath(storedFileName);
-        var newVersion = ExtractServerModVersionFromZip(storedZipPath);
-
-        var infoText =
-            $"Mod: {selected.Name}\n" +
-            $"Old DB Version: {selected.DbVersion}\n" +
-            $"Old Local Version: {selected.LocalVersion}\n" +
-            $"New Version (from ZIP): {newVersion}\n" +
-            $"ZIP File: {storedFileName}\n\n" +
-            "Queue this change?";
-
-        var confirm = MessageBox.Show(infoText, "Confirm Server Mod File", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes)
+        try
         {
-            return false;
+            if (!ShowIncomingFilePreview(picker.FileName, null, selected.Name,
+                    out var keepOldConfigs, out var serverModsWithConfigConflicts, out var excludedSourcePaths,
+                    out var selectedPluginVersion, out var selectedServerVersion))
+            {
+                canceled = true;
+                return false;
+            }
+
+            var selectedZipPath = picker.FileName;
+            if (selectedZipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                && excludedSourcePaths.Count > 0)
+            {
+                tempFilteredZipPath = CreateFilteredZipFromSelection(selectedZipPath, excludedSourcePaths);
+                selectedZipPath = tempFilteredZipPath;
+            }
+
+            if (serverModsWithConfigConflicts.Count == 0)
+            {
+                _serverConfigConflictDecisions[selected.Name] = keepOldConfigs;
+            }
+            else
+            {
+                foreach (var serverModWithConflict in serverModsWithConfigConflicts)
+                {
+                    _serverConfigConflictDecisions[serverModWithConflict] = keepOldConfigs;
+                }
+            }
+
+            var storedFileName = CopyServerModZipToStorage(selectedZipPath);
+            var storedZipPath = ResolvePendingServerZipPath(storedFileName);
+            var newVersion = ExtractServerModVersionFromZip(storedZipPath);
+            newVersion = NormalizeVersionForStorage(selectedServerVersion, NormalizeVersionForStorage(newVersion, string.IsNullOrWhiteSpace(oldVersion) ? "0.0.0" : oldVersion));
+            var effectivePendingState = string.IsNullOrWhiteSpace(oldVersion)
+                ? pendingState
+                : PromoteServerStateToUpdate(pendingState);
+
+            var infoText =
+                $"Mod: {selected.Name}\n" +
+                $"Old DB Version: {selected.DbVersion}\n" +
+                $"Old Local Version: {selected.LocalVersion}\n" +
+                $"New Version (from ZIP): {newVersion}\n" +
+                $"ZIP File: {storedFileName}\n\n" +
+                $"Queued action: {effectivePendingState}\n" +
+                "Queue this change?";
+
+            var confirm = MessageBox.Show(infoText, "Confirm Server Mod File", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return false;
+            }
+
+            _pendingServerChanges[selected.Name] = new ServerModInfo
+            {
+                Name = selected.Name,
+                Version = oldVersion,
+                NewVersion = newVersion,
+                FileName = storedFileName,
+                PendingChangeState = effectivePendingState
+            };
+
+            var clientPendingState = string.Equals(effectivePendingState, ServerStateUpdateBoth, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(effectivePendingState, ServerStateUpdateDb, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(effectivePendingState, ServerStateUpdateLocal, StringComparison.OrdinalIgnoreCase)
+                ? "update"
+                : "add";
+            QueueClientPendingFromBundleZip(selectedZipPath, clientPendingState, selectedPluginVersion);
+
+            return true;
         }
-
-        _pendingServerChanges[selected.Name] = new ServerModInfo
+        finally
         {
-            Name = selected.Name,
-            Version = oldVersion,
-            NewVersion = newVersion,
-            FileName = storedFileName,
-            PendingChangeState = pendingState
-        };
+            CleanupTempFilteredZip(tempFilteredZipPath);
+        }
+    }
 
-        var clientPendingState = string.Equals(pendingState, ServerStateUpdateBoth, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(pendingState, ServerStateUpdateDb, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(pendingState, ServerStateUpdateLocal, StringComparison.OrdinalIgnoreCase)
-            ? "update"
-            : "add";
-        QueueClientPendingFromBundleZip(picker.FileName, clientPendingState);
-
-        return true;
+    private static void CleanupTempFilteredZip(string? tempFilteredZipPath)
+    {
+        if (!string.IsNullOrWhiteSpace(tempFilteredZipPath) && File.Exists(tempFilteredZipPath))
+        {
+            File.Delete(tempFilteredZipPath);
+        }
     }
 
     private string CopyServerModZipToStorage(string sourceZipPath)
@@ -4247,6 +5142,47 @@ ON CONFLICT(name) DO UPDATE SET
         }
 
         return "0.0.0";
+    }
+
+    private static string? TryExtractPluginVersionFromZip(string zipPath, string? clientModName)
+    {
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            var dllEntries = archive.Entries
+                .Where(e => e.FullName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (dllEntries.Count == 0)
+                return null;
+
+            var targetEntry = dllEntries.FirstOrDefault(e =>
+                                !string.IsNullOrWhiteSpace(clientModName)
+                                && string.Equals(Path.GetFileNameWithoutExtension(e.FullName), clientModName, StringComparison.OrdinalIgnoreCase))
+                            ?? dllEntries.FirstOrDefault();
+
+            if (targetEntry == null)
+                return null;
+
+            var tempDllPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_ver_{Guid.NewGuid():N}.dll");
+            try
+            {
+                using var src = targetEntry.Open();
+                using var dst = File.Create(tempDllPath);
+                src.CopyTo(dst);
+
+                return FileVersionInfo.GetVersionInfo(tempDllPath).FileVersion;
+            }
+            finally
+            {
+                if (File.Exists(tempDllPath))
+                    File.Delete(tempDllPath);
+            }
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static ServerModInfo BuildServerChangeFromDb(ServerModViewModel selected, string pendingState, string oldVersion)
@@ -4657,6 +5593,7 @@ ON CONFLICT(name) DO UPDATE SET
             EnsureSptCoffeeSchema(connection);
 
             _pendingServerChanges.Clear();
+            _serverConfigConflictDecisions.Clear();
 
             using var command = connection.CreateCommand();
             command.CommandText = @"
