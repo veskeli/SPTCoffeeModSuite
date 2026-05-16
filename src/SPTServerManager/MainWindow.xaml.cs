@@ -5441,28 +5441,6 @@ ON CONFLICT(name) DO UPDATE SET
                     }
                 }
             }
-
-            var configRoots = new List<string>
-            {
-                Path.Combine(Config.SptServerFolder, "BepInEx", "config")
-            };
-            if (!string.IsNullOrWhiteSpace(Config.AdditionalModsPath))
-            {
-                configRoots.Add(Path.Combine(Config.AdditionalModsPath, "BepInEx", "config"));
-            }
-
-            foreach (var configRoot in configRoots.Where(Directory.Exists))
-            {
-                foreach (var oldFile in Directory.GetFiles(configRoot, "*", SearchOption.AllDirectories))
-                {
-                    var fileName = Path.GetFileName(oldFile);
-                    if (!fileName.Contains(currentClient.Name, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var relative = Path.GetRelativePath(configRoot, oldFile).Replace('\\', '/');
-                    AddCandidate("Other", oldFile, $"BepInEx/config/{relative}");
-                }
-            }
         }
 
         if (!string.IsNullOrWhiteSpace(preview.DetectedServerModName))
@@ -5829,23 +5807,6 @@ ON CONFLICT(name) DO UPDATE SET
     {
         var normalized = NormalizeArchivePath(normalizedPath);
 
-        if (PathContainsArchivePath(normalized, "BepInEx/config"))
-        {
-            var afterConfig = normalized.Split(new[] { "BepInEx/config/" }, StringSplitOptions.None).LastOrDefault();
-            if (!string.IsNullOrWhiteSpace(afterConfig))
-            {
-                var mainConfigPath = Path.Combine(Config.SptServerFolder, "BepInEx", "config", afterConfig.Replace('/', Path.DirectorySeparatorChar));
-                if (File.Exists(mainConfigPath))
-                    return true;
-
-                if (!string.IsNullOrWhiteSpace(Config.AdditionalModsPath))
-                {
-                    var secondaryConfigPath = Path.Combine(Config.AdditionalModsPath, "BepInEx", "config", afterConfig.Replace('/', Path.DirectorySeparatorChar));
-                    if (File.Exists(secondaryConfigPath))
-                        return true;
-                }
-            }
-        }
 
         if (!string.IsNullOrWhiteSpace(detectedServerModName)
             && normalized.StartsWith(detectedServerModName + "/", StringComparison.OrdinalIgnoreCase))
