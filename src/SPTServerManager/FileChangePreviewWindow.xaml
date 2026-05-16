@@ -211,6 +211,7 @@
                     </GridViewColumn>
                     <GridViewColumn Header="Type" Width="90" DisplayMemberBinding="{Binding FileType}" />
                     <GridViewColumn Header="File Name" Width="260" DisplayMemberBinding="{Binding FileName}" />
+                    <GridViewColumn Header="File Version" Width="120" DisplayMemberBinding="{Binding FileVersion}" />
                     <GridViewColumn Header="Location" Width="320" DisplayMemberBinding="{Binding Location}" />
                     <GridViewColumn Header="Source" Width="100" DisplayMemberBinding="{Binding SourceKind}" />
                 </GridView>

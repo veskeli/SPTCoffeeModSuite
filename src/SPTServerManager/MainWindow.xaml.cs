@@ -3912,7 +3912,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
         MessageBox.Show($"Reverted {revertedCount} pending change(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    private async void ForceUpdateSelected_Click(object sender, RoutedEventArgs e)
+    private void ForceUpdateSelected_Click(object sender, RoutedEventArgs e)
     {
         var selectedChanges = PendingChangesListView.SelectedItems.Cast<PendingChangeEntry>().ToList();
         if (selectedChanges.Count == 0)
@@ -4462,6 +4462,15 @@ ON CONFLICT(name) DO UPDATE SET
 
     private static string ResolveServerModSourceDirectory(string extractRoot, string modName)
     {
+        var nestedSptRoot = Directory.GetDirectories(extractRoot, modName, SearchOption.AllDirectories)
+            .Where(dir => PathEndsWithSegments(dir, "SPT", "user", "mods", modName)
+                          || PathEndsWithSegments(dir, "user", "mods", modName)
+                          || PathEndsWithSegments(dir, "mods", modName))
+            .OrderBy(dir => dir.Count(ch => ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar))
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(nestedSptRoot))
+            return nestedSptRoot;
+
         var sptRoot = Path.Combine(extractRoot, "SPT", "user", "mods", modName);
         if (Directory.Exists(sptRoot))
             return sptRoot;
@@ -4470,6 +4479,20 @@ ON CONFLICT(name) DO UPDATE SET
         if (Directory.Exists(directModFolder))
             return directModFolder;
 
+        var recursiveNamedMatch = Directory.GetDirectories(extractRoot, modName, SearchOption.AllDirectories)
+            .Where(dir => string.Equals(Path.GetFileName(dir), modName, StringComparison.OrdinalIgnoreCase))
+            .Where(dir => Directory.GetFiles(dir, "*.dll", SearchOption.TopDirectoryOnly).Length > 0
+                          || File.Exists(Path.Combine(dir, "package.json"))
+                          || Directory.GetFiles(dir, "*", SearchOption.TopDirectoryOnly).Length > 0)
+            .OrderBy(dir => dir.Count(ch => ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar))
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(recursiveNamedMatch))
+            return recursiveNamedMatch;
+
+        var rootHasFiles = Directory.GetFiles(extractRoot, "*", SearchOption.TopDirectoryOnly).Length > 0;
+        if (rootHasFiles)
+            return extractRoot;
+
         var subDirectories = Directory.GetDirectories(extractRoot);
         var namedMatch = subDirectories.FirstOrDefault(dir =>
             string.Equals(Path.GetFileName(dir), modName, StringComparison.OrdinalIgnoreCase));
@@ -4477,9 +4500,28 @@ ON CONFLICT(name) DO UPDATE SET
             return namedMatch;
 
         if (subDirectories.Length == 1)
-            return subDirectories[0];
+            return ResolveServerModSourceDirectory(subDirectories[0], modName);
 
         return extractRoot;
+    }
+
+    private static bool PathEndsWithSegments(string path, params string[] expectedSegments)
+    {
+        var actualSegments = path
+            .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+            .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        if (actualSegments.Length < expectedSegments.Length)
+            return false;
+
+        for (var i = 0; i < expectedSegments.Length; i++)
+        {
+            var actualIndex = actualSegments.Length - expectedSegments.Length + i;
+            if (!string.Equals(actualSegments[actualIndex], expectedSegments[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
     }
 
     private static List<string> GetConfigConflictRelativePaths(string incomingRoot, string existingRoot)
@@ -5062,6 +5104,7 @@ ON CONFLICT(name) DO UPDATE SET
             {
                 FileType = "Plugin",
                 FileName = fileName,
+                FileVersion = GetPreviewFileVersion(sourcePath, fileName),
                 Location = ".",
                 ExistsInOld = existsInOld,
                 SourceKind = existsInOld ? "Both" : "New",
@@ -5194,6 +5237,7 @@ ON CONFLICT(name) DO UPDATE SET
                     {
                         FileType = "Plugin",
                         FileName = Path.GetFileName(normalized),
+                        FileVersion = GetPreviewFileVersionFromZipEntry(sourcePath, normalized),
                         Location = location,
                         ExistsInOld = existsInOld,
                         SourceKind = existsInOld ? "Both" : "New",
@@ -5227,6 +5271,7 @@ ON CONFLICT(name) DO UPDATE SET
                     {
                         FileType = "Server Mod",
                         FileName = Path.GetFileName(normalized),
+                        FileVersion = GetPreviewFileVersionFromZipEntry(sourcePath, normalized),
                         Location = location,
                         ExistsInOld = existsInOld,
                         SourceKind = existsInOld ? "Both" : "New",
@@ -5249,6 +5294,7 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     FileType = "Other",
                     FileName = Path.GetFileName(normalized),
+                    FileVersion = GetPreviewFileVersionFromZipEntry(sourcePath, normalized),
                     Location = segments.Length <= 1 ? "." : string.Join('/', segments.Take(segments.Length - 1)),
                     ExistsInOld = otherExistsInOld,
                     SourceKind = otherExistsInOld ? "Both" : "New",
@@ -5308,6 +5354,7 @@ ON CONFLICT(name) DO UPDATE SET
                 IsIncluded = isConfigLike,
                 FileType = candidate.FileType,
                 FileName = candidate.FileName,
+                FileVersion = GetPreviewFileVersion(candidate.SourceFilePath, candidate.FileName),
                 Location = candidate.Location,
                 ExistsInOld = true,
                 SourceKind = "Old",
@@ -6365,6 +6412,50 @@ ON CONFLICT(name) DO UPDATE SET
         }
 
         return null;
+    }
+
+    private static string GetPreviewFileVersion(string sourceFilePath, string fileName)
+    {
+        if (!fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        var version = TryReadDllVersion(sourceFilePath);
+        return IsVersionPlaceholder(version) ? "Unknown" : version!;
+    }
+
+    private static string GetPreviewFileVersionFromZipEntry(string zipPath, string entryPath)
+    {
+        if (!entryPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        string? tempFilePath = null;
+
+        try
+        {
+            using var archive = ZipFile.OpenRead(zipPath);
+            var normalizedEntryPath = NormalizeArchivePath(entryPath);
+            var entry = archive.Entries.FirstOrDefault(candidate =>
+                string.Equals(NormalizeArchivePath(candidate.FullName), normalizedEntryPath, StringComparison.OrdinalIgnoreCase));
+            if (entry == null)
+                return "Unknown";
+
+            tempFilePath = Path.Combine(Path.GetTempPath(), $"sptcoffee_preview_{Guid.NewGuid():N}{Path.GetExtension(entry.Name)}");
+            entry.ExtractToFile(tempFilePath, overwrite: true);
+
+            var version = TryReadDllVersion(tempFilePath);
+            return IsVersionPlaceholder(version) ? "Unknown" : version!;
+        }
+        catch
+        {
+            return "Unknown";
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(tempFilePath) && File.Exists(tempFilePath))
+            {
+                File.Delete(tempFilePath);
+            }
+        }
     }
 
     private static string? TryExtractPluginVersionFromZip(string zipPath, string? clientModName, out string? selectedEntryPath, out string? selectedDllName)

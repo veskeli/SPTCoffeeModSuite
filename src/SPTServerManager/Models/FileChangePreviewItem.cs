@@ -9,6 +9,7 @@ public class FileChangePreviewItem
     public bool IsIncluded { get; set; } = true;
     public string FileType { get; set; } = "Other";
     public string FileName { get; set; } = string.Empty;
+    public string FileVersion { get; set; } = string.Empty;
     public string Location { get; set; } = ".";
     public bool ExistsInOld { get; set; }
     public string SourceKind { get; set; } = "New";
