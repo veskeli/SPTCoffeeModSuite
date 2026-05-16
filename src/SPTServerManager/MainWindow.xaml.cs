@@ -4593,6 +4593,169 @@ ON CONFLICT(name) DO UPDATE SET
             Directory.Delete(targetFolder, true);
     }
 
+    internal bool TrySyncLatestServerFilesIntoPreview(
+        string serverModName,
+        string? installedServerVersion,
+        string? archiveServerVersion,
+        IReadOnlyCollection<FileChangePreviewItem> currentItems,
+        out List<FileChangePreviewItem> syncedItems,
+        out string statusMessage)
+    {
+        syncedItems = currentItems.Select(ClonePreviewItem).ToList();
+        statusMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(serverModName))
+        {
+            statusMessage = "Server mod name was not provided.";
+            return false;
+        }
+
+        var serverModFolder = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", serverModName);
+        if (!Directory.Exists(serverModFolder))
+        {
+            statusMessage = $"Server mod folder was not found: {serverModFolder}";
+            return false;
+        }
+
+        if (IsVersionOlder(installedServerVersion, archiveServerVersion))
+        {
+            var result = MessageBox.Show(
+                $"The installed server mod version ({FormatVersionForPrompt(installedServerVersion)}) is older than the archive version ({FormatVersionForPrompt(archiveServerVersion)}).\n\nAre you sure you want to continue syncing the current server files?",
+                "Confirm Sync",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes)
+                return false;
+        }
+
+        var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_server_sync_{Guid.NewGuid():N}.zip");
+        try
+        {
+            ZipFile.CreateFromDirectory(serverModFolder, tempZipPath, CompressionLevel.Optimal, false);
+
+            using var archive = ZipFile.OpenRead(tempZipPath);
+            var itemsByTargetPath = syncedItems
+                .Where(item => !string.IsNullOrWhiteSpace(item.TargetRelativePath))
+                .ToDictionary(item => NormalizeArchivePath(item.TargetRelativePath), StringComparer.OrdinalIgnoreCase);
+
+            var addedCount = 0;
+            var updatedCount = 0;
+
+            foreach (var entry in archive.Entries)
+            {
+                var normalizedEntry = NormalizeArchivePath(entry.FullName);
+                if (string.IsNullOrWhiteSpace(normalizedEntry) || normalizedEntry.EndsWith("/", StringComparison.Ordinal))
+                    continue;
+
+                var targetRelativePath = NormalizeArchivePath($"SPT/user/mods/{serverModName}/{normalizedEntry}");
+                var sourceFilePath = Path.Combine(serverModFolder, normalizedEntry.Replace('/', Path.DirectorySeparatorChar));
+
+                if (itemsByTargetPath.TryGetValue(targetRelativePath, out var existingItem))
+                {
+                    existingItem.ExistsInOld = true;
+                    if (!string.Equals(existingItem.SourceKind, "Old", StringComparison.OrdinalIgnoreCase))
+                        existingItem.SourceKind = "Both";
+                    if (string.IsNullOrWhiteSpace(existingItem.OldSourcePath))
+                        existingItem.OldSourcePath = sourceFilePath;
+                    updatedCount++;
+                    continue;
+                }
+
+                var isConfigLike = IsConfigLikePath(targetRelativePath);
+                var newItem = new FileChangePreviewItem
+                {
+                    IsIncluded = isConfigLike,
+                    FileType = "Server Mod",
+                    FileName = Path.GetFileName(normalizedEntry),
+                    FileVersion = normalizedEntry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                        ? TryReadDllVersion(sourceFilePath) ?? string.Empty
+                        : string.Empty,
+                    Location = BuildPreviewLocation(normalizedEntry),
+                    ExistsInOld = true,
+                    SourceKind = "Old",
+                    SelectionChoice = isConfigLike ? FileChangePreviewItem.ChoiceKeepExisting : FileChangePreviewItem.ChoiceKeepNone,
+                    TargetRelativePath = targetRelativePath,
+                    SourceRelativePath = targetRelativePath,
+                    OldSourcePath = sourceFilePath
+                };
+
+                syncedItems.Add(newItem);
+                itemsByTargetPath[targetRelativePath] = newItem;
+                addedCount++;
+            }
+
+            statusMessage = addedCount == 0 && updatedCount == 0
+                ? "No additional files were found in the current server folder."
+                : $"Synced {addedCount} new server file(s) from the current server folder." + (updatedCount > 0 ? $" Updated {updatedCount} existing item(s)." : string.Empty);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            statusMessage = "Failed to sync latest server files: " + ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (File.Exists(tempZipPath))
+                File.Delete(tempZipPath);
+        }
+    }
+
+    private static string BuildPreviewLocation(string relativePath)
+    {
+        var normalized = NormalizeArchivePath(relativePath);
+        var lastSlash = normalized.LastIndexOf('/');
+        return lastSlash < 0 ? "." : normalized[..lastSlash];
+    }
+
+    private static FileChangePreviewItem ClonePreviewItem(FileChangePreviewItem source)
+    {
+        return new FileChangePreviewItem
+        {
+            IsIncluded = source.IsIncluded,
+            FileType = source.FileType,
+            FileName = source.FileName,
+            FileVersion = source.FileVersion,
+            Location = source.Location,
+            ExistsInOld = source.ExistsInOld,
+            SourceKind = source.SourceKind,
+            SelectionChoice = source.SelectionChoice,
+            TargetRelativePath = source.TargetRelativePath,
+            SourceRelativePath = source.SourceRelativePath,
+            OldSourcePath = source.OldSourcePath
+        };
+    }
+
+    private static string FormatVersionForPrompt(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+    }
+
+    private static bool IsVersionOlder(string? currentVersion, string? newVersion)
+    {
+        if (!TryParseComparableVersion(currentVersion, out var current) || !TryParseComparableVersion(newVersion, out var candidate))
+            return false;
+
+        return current.CompareTo(candidate) < 0;
+    }
+
+    private static bool TryParseComparableVersion(string? value, out Version version)
+    {
+        version = new Version(0, 0);
+
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var normalized = value.Trim().TrimStart('v', 'V');
+        var core = normalized.Split(new[] { '-', '+' }, 2, StringSplitOptions.RemoveEmptyEntries)[0];
+        if (!Version.TryParse(core, out var parsed) || parsed is null)
+            return false;
+
+        version = parsed;
+        return true;
+    }
+
     private void RefreshServerModsListView()
     {
         try

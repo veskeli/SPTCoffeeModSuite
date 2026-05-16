@@ -21,7 +21,7 @@ public partial class FileChangePreviewWindow : Window
     public bool SelectedPluginIsOptional { get; private set; }
     public bool SelectedPluginOptionalDefaultState { get; private set; }
 
-    private readonly IReadOnlyCollection<FileChangePreviewItem> _items;
+    private readonly List<FileChangePreviewItem> _items;
     private readonly List<FileChangePreviewItem> _allItems;
     private readonly ObservableCollection<FileChangePreviewItem> _displayItems;
     private readonly string _pluginAction;
@@ -29,10 +29,12 @@ public partial class FileChangePreviewWindow : Window
     private readonly int _pluginOldRevision;
     private readonly string _serverAction;
     private readonly string? _serverOldVersion;
+    private readonly string? _serverNewVersion;
     private readonly int _serverOldRevision;
+    private readonly string? _detectedServerModName;
 
     public FileChangePreviewWindow(
-        IReadOnlyCollection<FileChangePreviewItem> items,
+        List<FileChangePreviewItem> items,
         bool hasConfigConflicts,
         string actionSummary,
         string detectedType,
@@ -61,18 +63,20 @@ public partial class FileChangePreviewWindow : Window
          _pluginOldRevision = Math.Max(0, pluginOldRevision);
          _serverAction = serverAction;
          _serverOldVersion = serverOldVersion;
+          _serverNewVersion = serverNewVersion;
          _serverOldRevision = Math.Max(0, serverOldRevision);
+         _detectedServerModName = detectedServerModName;
          FilesListView.ItemsSource = _displayItems;
+         SyncLatestServerFilesButton.IsEnabled = !string.Equals(serverAction, "None", StringComparison.OrdinalIgnoreCase)
+                                                 && !string.IsNullOrWhiteSpace(detectedServerModName);
 
         ActionSummaryTextBlock.Text = actionSummary;
 
          var pluginText = string.IsNullOrWhiteSpace(detectedPluginName) ? "-" : detectedPluginName;
          var serverText = string.IsNullOrWhiteSpace(detectedServerModName) ? "-" : detectedServerModName;
          DetectedSummaryTextBlock.Text = $"Detected Type: {detectedType} | Plugin: {pluginText} | Server Mod: {serverText}";
-         PluginSummaryTextBlock.Text = $"Plugin: {pluginAction} | Old Version: {FormatVersion(pluginOldVersion)}";
-         PluginRevisionSummaryTextBlock.Text = $"Plugin Old Revision: {FormatRevision(_pluginOldRevision)}";
-         ServerSummaryTextBlock.Text = $"Server Mod: {serverAction} | Old Version: {FormatVersion(serverOldVersion)}";
-         ServerRevisionSummaryTextBlock.Text = $"Server Mod Old Revision: {FormatRevision(_serverOldRevision)}";
+
+         UpdateServerVersionInfoBanner();
 
         PluginVersionPanel.Visibility = string.Equals(pluginAction, "None", StringComparison.OrdinalIgnoreCase)
             ? Visibility.Collapsed
@@ -89,6 +93,10 @@ public partial class FileChangePreviewWindow : Window
         ServerVersionBox.Text = FormatVersionForInput(serverNewVersion);
         PluginRevisionBox.Text = SuggestRevisionForInput(pluginAction, pluginOldVersion, pluginNewVersion, _pluginOldRevision);
         ServerRevisionBox.Text = SuggestRevisionForInput(serverAction, serverOldVersion, serverNewVersion, _serverOldRevision);
+         PluginOldVersionTextBlock.Text = $"Version: {FormatVersion(pluginOldVersion)}";
+         PluginOldRevisionTextBlock.Text = $"Revision: {FormatRevision(_pluginOldRevision)}";
+         ServerOldVersionTextBlock.Text = $"Version: {FormatVersion(serverOldVersion)}";
+         ServerOldRevisionTextBlock.Text = $"Revision: {FormatRevision(_serverOldRevision)}";
         PluginIsFolderModCheckBox.IsChecked = pluginIsFolderMod;
         PluginAllowOnHeadlessCheckBox.IsChecked = pluginAllowOnHeadless;
         PluginIsOptionalCheckBox.IsChecked = pluginIsOptional;
@@ -129,6 +137,36 @@ public partial class FileChangePreviewWindow : Window
           {
               _displayItems.Add(item);
           }
+      }
+
+      private void UpdateServerVersionInfoBanner()
+      {
+          var localVersion = NormalizeVersionForDisplay(_serverOldVersion);
+          var zipVersion = NormalizeVersionForDisplay(_serverNewVersion);
+
+          if (!ShouldShowServerVersionInfo(localVersion, zipVersion))
+          {
+              ServerVersionInfoBorder.Visibility = Visibility.Collapsed;
+              return;
+          }
+
+          ServerVersionInfoTextBlock.Text =
+              $"Server folder and ZIP differ. Local server version: {localVersion} | ZIP version: {zipVersion}. " +
+              "Use 'Sync Latest Server Files' to pull the current server folder into the preview if you need those changes.";
+          ServerVersionInfoBorder.Visibility = Visibility.Visible;
+      }
+
+      private static bool ShouldShowServerVersionInfo(string localVersion, string zipVersion)
+      {
+          if (string.IsNullOrWhiteSpace(localVersion) && string.IsNullOrWhiteSpace(zipVersion))
+              return false;
+
+          return !string.Equals(localVersion, zipVersion, StringComparison.OrdinalIgnoreCase);
+      }
+
+      private static string NormalizeVersionForDisplay(string? value)
+      {
+          return string.IsNullOrWhiteSpace(value) ? "unknown" : value.Trim();
       }
 
       private void ContinueOverride_Click(object sender, RoutedEventArgs e)
@@ -174,6 +212,61 @@ public partial class FileChangePreviewWindow : Window
 
          FilesListView.Items.Refresh();
      }
+
+      private void SyncLatestServerFiles_Click(object sender, RoutedEventArgs e)
+      {
+          if (string.IsNullOrWhiteSpace(_detectedServerModName))
+          {
+              MessageBox.Show("No server mod was detected for this preview.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+              return;
+          }
+
+          if (Owner is not MainWindow mainWindow)
+          {
+              MessageBox.Show("Unable to access the server sync helper.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+              return;
+          }
+
+          if (!mainWindow.TrySyncLatestServerFilesIntoPreview(
+                  _detectedServerModName,
+                  _serverOldVersion,
+                  _serverNewVersion,
+                  _allItems,
+                  out var syncedItems,
+                  out var statusMessage))
+          {
+              if (!string.IsNullOrWhiteSpace(statusMessage))
+              {
+                  MessageBox.Show(statusMessage, "Sync Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+              }
+
+              return;
+          }
+
+          ApplySyncedItems(syncedItems);
+
+          if (!string.IsNullOrWhiteSpace(statusMessage))
+          {
+              MessageBox.Show(statusMessage, "Sync Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+          }
+      }
+
+      private void ApplySyncedItems(IReadOnlyCollection<FileChangePreviewItem> syncedItems)
+      {
+          _items.Clear();
+          foreach (var item in syncedItems)
+          {
+              _items.Add(item);
+          }
+
+          _allItems.Clear();
+          foreach (var item in syncedItems)
+          {
+              _allItems.Add(item);
+          }
+
+          UpdateListViewFilter();
+      }
 
      private bool TryCommitSelection()
      {

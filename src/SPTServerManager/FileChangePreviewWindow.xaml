@@ -89,6 +89,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -105,26 +106,6 @@
                         Foreground="#9ecbff"
                         TextWrapping="Wrap"
                         Text="Detected: Unknown"/>
-             <TextBlock x:Name="PluginSummaryTextBlock"
-                        Foreground="#b7f0c1"
-                        Margin="0,3,0,0"
-                        TextWrapping="Wrap"
-                        Text="Plugin: -"/>
-             <TextBlock x:Name="PluginRevisionSummaryTextBlock"
-                        Foreground="#b7f0c1"
-                        Margin="0,3,0,0"
-                        TextWrapping="Wrap"
-                        Text="Plugin Old Revision: -"/>
-             <TextBlock x:Name="ServerSummaryTextBlock"
-                        Foreground="#f7d794"
-                        Margin="0,3,0,0"
-                        TextWrapping="Wrap"
-                        Text="Server Mod: -"/>
-             <TextBlock x:Name="ServerRevisionSummaryTextBlock"
-                        Foreground="#f7d794"
-                        Margin="0,3,0,0"
-                        TextWrapping="Wrap"
-                        Text="Server Mod Old Revision: -"/>
          </StackPanel>
 
         <Grid Grid.Row="2" Margin="0,0,0,8">
@@ -134,33 +115,67 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <StackPanel x:Name="PluginVersionPanel" Grid.Column="0" Margin="0,0,8,0">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                    <CheckBox x:Name="PluginIncludeCheckBox"
-                              Content="Include"
-                              Foreground="White"
-                              IsChecked="True"
-                              VerticalAlignment="Center"/>
-                    <TextBlock Text="Plugin New Version" Foreground="#b7f0c1" Margin="12,0,0,0" VerticalAlignment="Center"/>
-                </StackPanel>
-                <TextBox x:Name="PluginVersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
-                <TextBlock Text="Plugin Revision" Foreground="#b7f0c1" Margin="0,6,0,4"/>
-                <TextBox x:Name="PluginRevisionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
-            </StackPanel>
+            <Grid x:Name="PluginVersionPanel" Grid.Column="0" Margin="0,0,8,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-            <StackPanel x:Name="ServerVersionPanel" Grid.Column="1" Margin="8,0,0,0">
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                    <CheckBox x:Name="ServerIncludeCheckBox"
-                              Content="Include"
-                              Foreground="White"
-                              IsChecked="True"
-                              VerticalAlignment="Center"/>
-                    <TextBlock Text="Server Mod New Version" Foreground="#f7d794" Margin="12,0,0,0" VerticalAlignment="Center"/>
-                </StackPanel>
-                <TextBox x:Name="ServerVersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
-                <TextBlock Text="Server Mod Revision" Foreground="#f7d794" Margin="0,6,0,4"/>
-                <TextBox x:Name="ServerRevisionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
-            </StackPanel>
+                <Border Grid.Row="0" Background="#242424" BorderBrush="#3c3c3c" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+                    <StackPanel>
+                        <TextBlock Text="Plugin Old Version / Revision" Foreground="#9ecbff" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBlock x:Name="PluginOldVersionTextBlock" Foreground="#b7f0c1" Text="Version: -"/>
+                        <TextBlock x:Name="PluginOldRevisionTextBlock" Foreground="#b7f0c1" Text="Revision: -" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Background="#1f1f1f" BorderBrush="#3c3c3c" BorderThickness="1" Padding="8">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <CheckBox x:Name="PluginIncludeCheckBox"
+                                      Content="Include"
+                                      Foreground="White"
+                                      IsChecked="True"
+                                      VerticalAlignment="Center"/>
+                            <TextBlock Text="Plugin New Version" Foreground="#b7f0c1" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBox x:Name="PluginVersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
+                        <TextBlock Text="Plugin Revision" Foreground="#b7f0c1" Margin="0,6,0,4"/>
+                        <TextBox x:Name="PluginRevisionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid x:Name="ServerVersionPanel" Grid.Column="1" Margin="8,0,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Background="#242424" BorderBrush="#3c3c3c" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+                    <StackPanel>
+                        <TextBlock Text="Server Mod Old Version / Revision" Foreground="#9ecbff" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBlock x:Name="ServerOldVersionTextBlock" Foreground="#f7d794" Text="Version: -"/>
+                        <TextBlock x:Name="ServerOldRevisionTextBlock" Foreground="#f7d794" Text="Revision: -" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Background="#1f1f1f" BorderBrush="#3c3c3c" BorderThickness="1" Padding="8">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <CheckBox x:Name="ServerIncludeCheckBox"
+                                      Content="Include"
+                                      Foreground="White"
+                                      IsChecked="True"
+                                      VerticalAlignment="Center"/>
+                            <TextBlock Text="Server Mod New Version" Foreground="#f7d794" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBox x:Name="ServerVersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
+                        <TextBlock Text="Server Mod Revision" Foreground="#f7d794" Margin="0,6,0,4"/>
+                        <TextBox x:Name="ServerRevisionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555" Padding="4"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
 
             <StackPanel x:Name="PluginFlagsPanel" Grid.Column="2" Margin="8,0,0,0">
                 <TextBlock Text="Plugin Options" Foreground="#9ecbff" Margin="0,0,0,4"/>
@@ -172,6 +187,20 @@
         </Grid>
 
         <Border Grid.Row="3"
+                x:Name="ServerVersionInfoBorder"
+                Background="#1e3a5f"
+                BorderBrush="#4aa3df"
+                BorderThickness="1"
+                Padding="8"
+                Margin="0,0,0,8"
+                Visibility="Collapsed">
+            <TextBlock x:Name="ServerVersionInfoTextBlock"
+                       Foreground="#b8e3ff"
+                       TextWrapping="Wrap"
+                       Text="Server archive and local server versions differ."/>
+        </Border>
+
+        <Border Grid.Row="4"
                 x:Name="ConfigWarningBorder"
                 Background="#553300"
                 BorderBrush="#aa8800"
@@ -186,7 +215,7 @@
         </Border>
 
 
-        <ListView Grid.Row="4"
+        <ListView Grid.Row="5"
                   x:Name="FilesListView"
                   Background="#1e1e1e"
                   Foreground="White"
@@ -196,6 +225,11 @@
                     <Setter Property="Background" Value="#232323"/>
                     <Setter Property="Foreground" Value="White"/>
                     <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                </Style>
+                <Style x:Key="PreviewCellTextStyle" TargetType="TextBlock">
+                    <Setter Property="VerticalAlignment" Value="Center"/>
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                    <Setter Property="Foreground" Value="White"/>
                 </Style>
             </ListView.Resources>
             <ListView.View>
@@ -209,18 +243,93 @@
                             </DataTemplate>
                         </GridViewColumn.CellTemplate>
                     </GridViewColumn>
-                    <GridViewColumn Header="Type" Width="90" DisplayMemberBinding="{Binding FileType}" />
-                    <GridViewColumn Header="File Name" Width="260" DisplayMemberBinding="{Binding FileName}" />
+                    <GridViewColumn Header="Type" Width="90">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock HorizontalAlignment="Center" Text="{Binding FileType}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource PreviewCellTextStyle}">
+                                            <Setter Property="Foreground" Value="LightGray"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Plugin">
+                                                    <Setter Property="Foreground" Value="#9ecbff"/>
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Server Mod">
+                                                    <Setter Property="Foreground" Value="#f7d794"/>
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Other">
+                                                    <Setter Property="Foreground" Value="#cfcfcf"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="File Name" Width="260">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FileName}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource PreviewCellTextStyle}">
+                                            <Setter Property="Foreground" Value="White"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Plugin">
+                                                    <Setter Property="Foreground" Value="#b7f0c1"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Server Mod">
+                                                    <Setter Property="Foreground" Value="#ffe08a"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding FileType}" Value="Other">
+                                                    <Setter Property="Foreground" Value="#d0d0d0"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
                     <GridViewColumn Header="File Version" Width="120" DisplayMemberBinding="{Binding FileVersion}" />
                     <GridViewColumn Header="Location" Width="320" DisplayMemberBinding="{Binding Location}" />
-                    <GridViewColumn Header="Source" Width="100" DisplayMemberBinding="{Binding SourceKind}" />
+                    <GridViewColumn Header="Source" Width="100">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock HorizontalAlignment="Center" Text="{Binding SourceKind}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource PreviewCellTextStyle}">
+                                            <Setter Property="Foreground" Value="White"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SourceKind}" Value="New">
+                                                    <Setter Property="Foreground" Value="LimeGreen"/>
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding SourceKind}" Value="Old">
+                                                    <Setter Property="Foreground" Value="Tomato"/>
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding SourceKind}" Value="Both">
+                                                    <Setter Property="Foreground" Value="DeepSkyBlue"/>
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
                 </GridView>
             </ListView.View>
         </ListView>
 
-        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button Content="Keep All" Width="95" Margin="0,0,8,0" Click="SelectAll_Click" Background="#3b82f6"/>
             <Button Content="Skip All" Width="95" Margin="0,0,8,0" Click="SelectNone_Click" Background="#8b5cf6"/>
+            <Button x:Name="SyncLatestServerFilesButton" Content="Sync Latest Server Files" Width="190" Margin="0,0,8,0" Click="SyncLatestServerFiles_Click" Background="#0f766e"/>
             <Button Content="Cancel" Width="95" Margin="0,0,8,0" Click="Cancel_Click" Background="#555"/>
             <Button Content="Continue" Width="160" Click="ContinueOverride_Click" Background="DarkOliveGreen"/>
         </StackPanel>
