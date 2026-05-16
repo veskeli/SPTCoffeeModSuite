@@ -580,15 +580,17 @@
                         </StackPanel>
 
                         <StackPanel Grid.Row="2" Orientation="Horizontal" Height="30" HorizontalAlignment="Left">
-                            <Button Content="Refresh" Width="90"
-                                    Click="RefreshPendingChanges_Click" Background="DodgerBlue"/>
-                            <Button Content="Temp Diagnostics" Width="130" Margin="5,0,0,0"
-                                    Click="ShowPendingTempDiagnostics_Click" Background="#555" Foreground="White"/>
-                            <Button Content="Revert Selected" Width="130" Margin="5,0,0,0"
-                                    Click="RevertSelectedPendingChange_Click" Background="DarkRed"/>
-                            <Button x:Name="UpdateChangesButton" Content="Update Changes" Width="300" Margin="5,0,0,0"
-                                    Click="UpdatePendingChanges_Click" Background="Green"/>
-                        </StackPanel>
+                             <Button Content="Refresh" Width="90"
+                                     Click="RefreshPendingChanges_Click" Background="DodgerBlue"/>
+                             <Button Content="Temp Diagnostics" Width="130" Margin="5,0,0,0"
+                                     Click="ShowPendingTempDiagnostics_Click" Background="#555" Foreground="White"/>
+                             <Button Content="Revert Selected" Width="130" Margin="5,0,0,0"
+                                     Click="RevertSelectedPendingChange_Click" Background="DarkRed"/>
+                             <Button Content="Force Update Selected" Width="160" Margin="5,0,0,0"
+                                     Click="ForceUpdateSelected_Click" Background="DarkSlateBlue"/>
+                             <Button x:Name="UpdateChangesButton" Content="Update Changes" Width="300" Margin="5,0,0,0"
+                                     Click="UpdatePendingChanges_Click" Background="Green"/>
+                         </StackPanel>
                     </Grid>
                 </TabItem>
 

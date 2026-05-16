@@ -3912,6 +3912,137 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
         MessageBox.Show($"Reverted {revertedCount} pending change(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
+    private async void ForceUpdateSelected_Click(object sender, RoutedEventArgs e)
+    {
+        var selectedChanges = PendingChangesListView.SelectedItems.Cast<PendingChangeEntry>().ToList();
+        if (selectedChanges.Count == 0)
+        {
+            MessageBox.Show("Please select one or more pending changes to apply.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (MessageBox.Show($"Force-apply {selectedChanges.Count} selected pending change(s) without restarting servers?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_databasePath))
+            {
+                MessageBox.Show("Database path not configured.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            connection.Open();
+            EnsureSptCoffeeSchema(connection);
+            MigratePluginsSchema(connection);
+
+            var existingDbMods = LoadModsFromDatabase(connection)
+                .ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+
+            int applied = 0;
+            foreach (var selected in selectedChanges)
+            {
+                if (selected.IsServerMod)
+                {
+                    if (!_pendingServerChanges.TryGetValue(selected.Name, out var mod))
+                        continue;
+
+                    var state = mod.PendingChangeState?.Trim().ToLowerInvariant() ?? string.Empty;
+                    switch (state)
+                    {
+                        case ServerStateAddBoth:
+                        case ServerStateUpdateBoth:
+                            UpsertServerModFromPending(connection, mod, selected.Name);
+                            UpsertLocalServerModFromPending(mod, selected.Name);
+                            break;
+                        case ServerStateDeleteBoth:
+                            DeleteServerModFromDatabase(connection, selected.Name);
+                            RemoveLocalServerMod(selected.Name);
+                            break;
+                        case ServerStateAddDb:
+                        case ServerStateUpdateDb:
+                            UpsertServerModFromPending(connection, mod, selected.Name);
+                            break;
+                        case ServerStateDeleteDb:
+                            DeleteServerModFromDatabase(connection, selected.Name);
+                            break;
+                        case ServerStateAddLocal:
+                        case ServerStateUpdateLocal:
+                            UpsertLocalServerModFromPending(mod, selected.Name);
+                            break;
+                        case ServerStateDeleteLocal:
+                            RemoveLocalServerMod(selected.Name);
+                            break;
+                        case "add":
+                        case "update":
+                            UpsertServerModFromPending(connection, mod, selected.Name);
+                            break;
+                        case "delete":
+                            DeleteServerModFromDatabase(connection, selected.Name);
+                            break;
+                    }
+
+                    _pendingServerChanges.Remove(selected.Name);
+                    applied++;
+                }
+                else
+                {
+                    if (!_pendingChanges.TryGetValue(selected.Name, out var mod))
+                        continue;
+
+                    if (mod.PendingChangeState == "add")
+                    {
+                        mod.Version = NormalizeVersionForStorage(mod.Version, "0.0.0");
+                        mod.Revision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : 1;
+                        EnsureClientPendingFileInStorage(mod);
+                        UpsertModInDatabase(connection, mod);
+                    }
+                    else if (mod.PendingChangeState == "delete")
+                    {
+                        if (existingDbMods.TryGetValue(selected.Name, out var existingDelete))
+                            ArchiveExistingClientMod(existingDelete);
+                        DeleteModFromDatabase(connection, selected.Name);
+                    }
+                    else if (mod.PendingChangeState == "update" && !string.IsNullOrWhiteSpace(mod.NewVersion))
+                    {
+                        if (existingDbMods.TryGetValue(selected.Name, out var existingUpdate))
+                            ArchiveExistingClientMod(existingUpdate);
+                        EnsureClientPendingFileInStorage(mod, overwriteExisting: true);
+                        var oldVersion = NormalizeVersionForStorage(mod.Version, "0.0.0");
+                        var targetVersion = NormalizeVersionForStorage(mod.NewVersion, oldVersion);
+                        var existingRevision = existingDbMods.TryGetValue(selected.Name, out var existingRevisionMod)
+                            ? Math.Max(0, existingRevisionMod.Revision)
+                            : Math.Max(0, mod.Revision);
+                        mod.Version = targetVersion;
+                        var effectiveNewRevision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision : (int?)null;
+                        mod.Revision = effectiveNewRevision ?? (string.Equals(oldVersion, targetVersion, StringComparison.OrdinalIgnoreCase)
+                            ? Math.Max(1, existingRevision + 1)
+                            : 1);
+                        mod.NewVersion = null;
+                        mod.NewRevision = null;
+                        UpsertModInDatabase(connection, mod);
+                    }
+
+                    _pendingChanges.Remove(selected.Name);
+                    applied++;
+                }
+            }
+
+            SavePendingChangesToDatabase();
+            SaveServerPendingChangesToDatabase();
+            RefreshModListView();
+            RefreshServerModsListView();
+            RefreshPendingChanges_Internal();
+            MessageBox.Show($"Force-applied {applied} pending change(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to force-apply changes: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void RestartServersCheckBox_Changed(object sender, RoutedEventArgs e)
     {
         if (_isInitializingRestartCheckbox)
