@@ -827,6 +827,9 @@ public partial class MainWindow
     {
         var statusList = new List<ModStatusEntry>();
 
+        // Load installed revisions from file
+        var installedRevisions = LoadInstalledPluginRevisions();
+
         // Create dictionaries for quick lookup
         var localDict = localMods.ToDictionary(m => m.Name, m => m, StringComparer.OrdinalIgnoreCase);
         var serverDict = serverMods.ToDictionary(m => m.Name, m => m, StringComparer.OrdinalIgnoreCase);
@@ -837,16 +840,39 @@ public partial class MainWindow
             localDict.TryGetValue(serverMod.Name, out var localMod);
 
             string status;
+            string displayLocalVersion = localMod?.Version ?? "-";
+            string displayServerVersion = serverMod.Version;
+
             if (localMod == null)
                 status = "Not installed";
             else
-                status = localMod.Version == serverMod.Version ? "Up to date" : "Update";
+            {
+                // Get installed revision for display
+                installedRevisions.TryGetValue(serverMod.Name, out var installedRevision);
+                if (installedRevision > 1)
+                    displayLocalVersion = $"{localMod.Version} Rev{installedRevision}";
+
+                // Compare versions first
+                if (localMod.Version != serverMod.Version)
+                {
+                    status = "Update";
+                }
+                else
+                {
+                    // Versions match, check revision
+                    status = installedRevision >= serverMod.Revision ? "Up to date" : "Update";
+                }
+            }
+
+            // Add revision suffix to server version if > 1
+            if (serverMod.Revision > 1)
+                displayServerVersion = $"{serverMod.Version} Rev{serverMod.Revision}";
 
             statusList.Add(new ModStatusEntry
             {
                 Name = serverMod.Name,
-                LocalVersion = localMod?.Version ?? "-",
-                ServerVersion = serverMod.Version,
+                LocalVersion = displayLocalVersion,
+                ServerVersion = displayServerVersion,
                 Status = status,
                 IsFolderMod = serverMod.IsFolderMod
             });
@@ -857,10 +883,16 @@ public partial class MainWindow
         {
             if (!serverDict.ContainsKey(localMod.Name))
             {
+                // Add revision suffix to local version if > 1
+                string displayLocalVersion = localMod.Version;
+                installedRevisions.TryGetValue(localMod.Name, out var localRevision);
+                if (localRevision > 1)
+                    displayLocalVersion = $"{localMod.Version} Rev{localRevision}";
+
                 statusList.Add(new ModStatusEntry
                 {
                     Name = localMod.Name,
-                    LocalVersion = localMod.Version,
+                    LocalVersion = displayLocalVersion,
                     ServerVersion = "-",
                     Status = "Removed",
                     IsFolderMod = localMod.IsFolderMod
@@ -877,14 +909,81 @@ public partial class MainWindow
         if (localMods.Count != serverMods.Count)
             return false;
 
-        // Check if all server mods are present locally with matching versions
+        // Load installed revisions
+        var installedRevisions = LoadInstalledPluginRevisions();
+
+        // Check if all server mods are present locally with matching versions and revisions
         foreach (var serverMod in serverMods)
         {
             var localMod = localMods.FirstOrDefault(m => m.Name == serverMod.Name);
             if (localMod == null || localMod.Version != serverMod.Version)
                 return false;
+
+            // Also check revision if versions match
+            installedRevisions.TryGetValue(serverMod.Name, out var installedRevision);
+            if (installedRevision < serverMod.Revision)
+                return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// Loads installed plugin revisions from the local tracking file.
+    /// Returns a dictionary of mod name to revision number.
+    /// </summary>
+    private Dictionary<string, int> LoadInstalledPluginRevisions()
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(_basePath))
+            return result;
+
+        var revisionsFile = Path.Combine(_basePath, "BepInEx", "CurrentPluginRevisions.json");
+        if (!File.Exists(revisionsFile))
+            return result;
+
+        try
+        {
+            var json = File.ReadAllText(revisionsFile);
+            var revisions = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+            if (revisions != null)
+            {
+                return revisions;
+            }
+        }
+        catch
+        {
+            // If the file is corrupted or cannot be parsed, return empty dict
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Saves the installed plugin revision to the local tracking file.
+    /// </summary>
+    private void SaveInstalledPluginRevision(string modName, int revision)
+    {
+        if (string.IsNullOrWhiteSpace(_basePath))
+            return;
+
+        var revisionsFile = Path.Combine(_basePath, "BepInEx", "CurrentPluginRevisions.json");
+        var directory = Path.GetDirectoryName(revisionsFile);
+        if (!Directory.Exists(directory))
+            Directory.CreateDirectory(directory!);
+
+        try
+        {
+            var revisions = LoadInstalledPluginRevisions();
+            revisions[modName] = revision;
+
+            var json = JsonSerializer.Serialize(revisions, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(revisionsFile, json);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to save plugin revision for {modName}: {ex.Message}");
+        }
     }
 
     private async Task<List<ConfigInfo>> GetServerConfigsAsync()
@@ -1279,6 +1378,9 @@ public partial class MainWindow
                 // Cleanup
                 if (Directory.Exists(extractPath))
                     Directory.Delete(extractPath, true);
+
+                // Save the installed revision
+                SaveInstalledPluginRevision(modInfo.Name, modInfo.Revision);
 
                 // Done
                 mod.Status = "Up to date";

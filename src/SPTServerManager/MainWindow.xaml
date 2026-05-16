@@ -82,6 +82,7 @@
                                     </GridViewColumn>
 
                                     <GridViewColumn Header="Version" Width="90" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Revision" Width="70" DisplayMemberBinding="{Binding Revision}" />
 
                                     <GridViewColumn Header="Folder Mod" Width="80">
                                         <GridViewColumn.CellTemplate>
@@ -316,6 +317,7 @@
                                     <GridViewColumn Header="Mod Name" Width="200" DisplayMemberBinding="{Binding Name}" />
                                     <GridViewColumn Header="File Version" Width="90" DisplayMemberBinding="{Binding FileVersion}" />
                                     <GridViewColumn Header="DB Version" Width="90" DisplayMemberBinding="{Binding DbVersion}" />
+                                    <GridViewColumn Header="DB Rev" Width="70" DisplayMemberBinding="{Binding DbRevision}" />
                                     <GridViewColumn Header="Source" Width="120" DisplayMemberBinding="{Binding Source}" />
                                     <GridViewColumn Header="Status" Width="230">
                                         <GridViewColumn.CellTemplate>
@@ -373,6 +375,7 @@
                                 <GridView>
                                     <GridViewColumn Header="Mod Name" Width="200" DisplayMemberBinding="{Binding Name}" />
                                     <GridViewColumn Header="DB Version" Width="90" DisplayMemberBinding="{Binding DbVersion}" />
+                                    <GridViewColumn Header="DB Rev" Width="70" DisplayMemberBinding="{Binding DbRevision}" />
                                     <GridViewColumn Header="Local Version" Width="100" DisplayMemberBinding="{Binding LocalVersion}" />
                                     <GridViewColumn Header="File Name" Width="180" DisplayMemberBinding="{Binding FileName}" />
                                     <GridViewColumn Header="Status" Width="170">
@@ -525,6 +528,7 @@
                                         </GridViewColumn.CellTemplate>
                                     </GridViewColumn>
                                     <GridViewColumn Header="Curr. Version" Width="90" DisplayMemberBinding="{Binding Version}" />
+                                    <GridViewColumn Header="Curr. Rev" Width="75" DisplayMemberBinding="{Binding RevisionDisplay}" />
                                     <GridViewColumn Header="Change Type" Width="150">
                                         <GridViewColumn.CellTemplate>
                                             <DataTemplate>
@@ -560,6 +564,7 @@
                                             </DataTemplate>
                                         </GridViewColumn.CellTemplate>
                                     </GridViewColumn>
+                                    <GridViewColumn Header="New Rev" Width="75" DisplayMemberBinding="{Binding NewRevisionDisplay}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>

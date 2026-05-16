@@ -560,17 +560,19 @@ public partial class MainWindow : Window
             upsertCommand.Transaction = tx;
             // UPSERT: on name conflict, update auto-detected fields but preserve manually-set flags
             upsertCommand.CommandText = @"
-INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, updated_utc)
-VALUES($name, $version, $fileName, $isFolderMod, 0, 0, 0, $updatedUtc)
+INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, revision, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, 0, 0, 0, $revision, $updatedUtc)
 ON CONFLICT(name) DO UPDATE SET
     version = excluded.version,
     file_name = excluded.file_name,
     is_folder_mod = excluded.is_folder_mod,
+    revision = excluded.revision,
     updated_utc = excluded.updated_utc;";
             upsertCommand.Parameters.AddWithValue("$name", mod.Name);
             upsertCommand.Parameters.AddWithValue("$version", mod.Version);
             upsertCommand.Parameters.AddWithValue("$fileName", mod.FileName);
             upsertCommand.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
+            upsertCommand.Parameters.AddWithValue("$revision", Math.Max(0, mod.Revision));
             upsertCommand.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
             upsertCommand.ExecuteNonQuery();
         }
@@ -590,6 +592,7 @@ CREATE TABLE IF NOT EXISTS plugins (
     allow_on_headless INTEGER NOT NULL DEFAULT 0,
     is_optional INTEGER NOT NULL DEFAULT 0,
     optional_default_state INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
     updated_utc TEXT NOT NULL
 );
 
@@ -621,6 +624,8 @@ CREATE TABLE IF NOT EXISTS pending_changes (
     change_type TEXT NOT NULL,
     old_version TEXT,
     new_version TEXT,
+    old_revision INTEGER NOT NULL DEFAULT 0,
+    new_revision INTEGER,
     file_name TEXT NOT NULL DEFAULT '',
     is_folder_mod INTEGER NOT NULL DEFAULT 0,
     allow_on_headless INTEGER NOT NULL DEFAULT 0,
@@ -633,6 +638,7 @@ CREATE TABLE IF NOT EXISTS server_plugins (
     name TEXT NOT NULL COLLATE NOCASE PRIMARY KEY,
     version TEXT NOT NULL,
     file_name TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
     updated_utc TEXT NOT NULL
 );
 
@@ -642,6 +648,8 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
     change_type TEXT NOT NULL,
     old_version TEXT NOT NULL DEFAULT '',
     new_version TEXT NOT NULL DEFAULT '',
+    old_revision INTEGER NOT NULL DEFAULT 0,
+    new_revision INTEGER,
     file_name TEXT NOT NULL DEFAULT '',
     created_utc TEXT NOT NULL
 );";
@@ -656,7 +664,9 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
             ("is_folder_mod", "INTEGER NOT NULL DEFAULT 0"),
             ("allow_on_headless", "INTEGER NOT NULL DEFAULT 0"),
             ("is_optional", "INTEGER NOT NULL DEFAULT 0"),
-            ("optional_default_state", "INTEGER NOT NULL DEFAULT 0")
+            ("optional_default_state", "INTEGER NOT NULL DEFAULT 0"),
+            ("old_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("new_revision", "INTEGER")
         };
 
         foreach (var (col, def) in newColumns)
@@ -665,6 +675,26 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
             {
                 using var alter = connection.CreateCommand();
                 alter.CommandText = $"ALTER TABLE pending_changes ADD COLUMN {col} {def};";
+                alter.ExecuteNonQuery();
+            }
+            catch
+            {
+                // Column already exists — safe to ignore.
+            }
+        }
+
+        var newServerColumns = new[]
+        {
+            ("old_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("new_revision", "INTEGER")
+        };
+
+        foreach (var (col, def) in newServerColumns)
+        {
+            try
+            {
+                using var alter = connection.CreateCommand();
+                alter.CommandText = $"ALTER TABLE server_pending_changes ADD COLUMN {col} {def};";
                 alter.ExecuteNonQuery();
             }
             catch
@@ -682,6 +712,7 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
             ("allow_on_headless", "INTEGER NOT NULL DEFAULT 0"),
             ("is_optional", "INTEGER NOT NULL DEFAULT 0"),
             ("optional_default_state", "INTEGER NOT NULL DEFAULT 0"),
+            ("revision", "INTEGER NOT NULL DEFAULT 0"),
         };
 
         foreach (var (col, def) in newColumns)
@@ -696,6 +727,18 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
             {
                 // Column already exists — safe to ignore
             }
+        }
+
+        // Also migrate server_plugins table
+        try
+        {
+            using var alter = connection.CreateCommand();
+            alter.CommandText = "ALTER TABLE server_plugins ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;";
+            alter.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Column already exists — safe to ignore
         }
     }
 
@@ -2132,6 +2175,7 @@ ON CONFLICT(key) DO UPDATE SET
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
             MigrateLegacyAdminsToDatabase(connection);
 
             var adminList = LoadAdminsFromDatabase(connection);
@@ -2156,7 +2200,7 @@ ON CONFLICT(key) DO UPDATE SET
         using var command = connection.CreateCommand();
         command.CommandText = @"
 SELECT name, version, file_name, is_folder_mod,
-       allow_on_headless, is_optional, optional_default_state
+       allow_on_headless, is_optional, optional_default_state, COALESCE(revision, 0)
 FROM plugins ORDER BY name COLLATE NOCASE;";
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -2169,7 +2213,8 @@ FROM plugins ORDER BY name COLLATE NOCASE;";
                 IsFolderMod = reader.GetInt32(3) == 1,
                 AllowOnHeadless = reader.GetInt32(4) == 1,
                 IsOptional = reader.GetInt32(5) == 1,
-                OptionalDefaultState = reader.GetInt32(6) == 1
+                OptionalDefaultState = reader.GetInt32(6) == 1,
+                Revision = reader.GetInt32(7)
             });
         }
         return mods;
@@ -2179,8 +2224,8 @@ FROM plugins ORDER BY name COLLATE NOCASE;";
     {
         using var command = connection.CreateCommand();
         command.CommandText = @"
-INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, updated_utc)
-VALUES($name, $version, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState, $updatedUtc)
+INSERT INTO plugins(name, version, file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state, revision, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState, $revision, $updatedUtc)
 ON CONFLICT(name) DO UPDATE SET
     version = excluded.version,
     file_name = excluded.file_name,
@@ -2188,6 +2233,7 @@ ON CONFLICT(name) DO UPDATE SET
     allow_on_headless = excluded.allow_on_headless,
     is_optional = excluded.is_optional,
     optional_default_state = excluded.optional_default_state,
+    revision = excluded.revision,
     updated_utc = excluded.updated_utc;";
         command.Parameters.AddWithValue("$name", mod.Name);
         command.Parameters.AddWithValue("$version", mod.Version);
@@ -2196,6 +2242,7 @@ ON CONFLICT(name) DO UPDATE SET
         command.Parameters.AddWithValue("$allowOnHeadless", mod.AllowOnHeadless ? 1 : 0);
         command.Parameters.AddWithValue("$isOptional", mod.IsOptional ? 1 : 0);
         command.Parameters.AddWithValue("$optionalDefaultState", mod.OptionalDefaultState ? 1 : 0);
+        command.Parameters.AddWithValue("$revision", Math.Max(0, mod.Revision));
         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
     }
@@ -2216,6 +2263,7 @@ ON CONFLICT(name) DO UPDATE SET
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
             MigratePluginsSchema(connection);
             var mods = LoadModsFromDatabase(connection);
 
@@ -2226,6 +2274,7 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     mod.PendingChangeState = pendingMod.PendingChangeState;
                     mod.NewVersion = pendingMod.NewVersion;
+                    mod.NewRevision = pendingMod.NewRevision;
                 }
             }
 
@@ -2242,8 +2291,10 @@ ON CONFLICT(name) DO UPDATE SET
                     AllowOnHeadless = pendingAdd.AllowOnHeadless,
                     IsOptional = pendingAdd.IsOptional,
                     OptionalDefaultState = pendingAdd.OptionalDefaultState,
+                    Revision = pendingAdd.Revision,
                     PendingChangeState = pendingAdd.PendingChangeState,
-                    NewVersion = pendingAdd.NewVersion
+                    NewVersion = pendingAdd.NewVersion,
+                    NewRevision = pendingAdd.NewRevision
                 });
             }
 
@@ -2283,6 +2334,8 @@ ON CONFLICT(name) DO UPDATE SET
             var includedOldFiles = new List<FileChangePreviewItem>();
             string? selectedPluginVersion = null;
             string? selectedServerVersion = null;
+            int? selectedPluginRevision = null;
+            int? selectedServerRevision = null;
             var includePluginUpdate = true;
             var includeServerUpdate = true;
             var skipPluginUpdateOnSameVersion = false;
@@ -2296,6 +2349,7 @@ ON CONFLICT(name) DO UPDATE SET
                 && !ShowIncomingFilePreview(selectedFilePath, detected.ClientModName, detected.ServerModName,
                     out keepOldConfigs, out serverModsWithConfigConflicts, out excludedSourcePaths, out includedOldFiles,
                     out selectedPluginVersion, out selectedServerVersion,
+                    out selectedPluginRevision, out selectedServerRevision,
                     out includePluginUpdate, out includeServerUpdate,
                     out skipPluginUpdateOnSameVersion, out skipServerUpdateOnSameVersion,
                     out selectedPluginIsFolderMod, out selectedPluginAllowOnHeadless,
@@ -2345,13 +2399,13 @@ ON CONFLICT(name) DO UPDATE SET
             var queuedClient = false;
             if (detected.HasClientMod && includePluginUpdate && !skipPluginUpdateOnSameVersion)
             {
-                queuedClient = QueueDetectedClientMod(selectedFilePath, detected);
+                queuedClient = QueueDetectedClientMod(selectedFilePath, detected, selectedPluginRevision);
             }
 
             string? syncedServerMod = null;
             if (detected.HasServerMod && includeServerUpdate && !skipServerUpdateOnSameVersion)
             {
-                syncedServerMod = QueueServerPendingFromBundleZip(selectedFilePath, ServerStateAddBoth, detected.ServerVersion);
+                syncedServerMod = QueueServerPendingFromBundleZip(selectedFilePath, ServerStateAddBoth, detected.ServerVersion, selectedServerRevision);
             }
 
             if (!queuedClient && string.IsNullOrWhiteSpace(syncedServerMod))
@@ -2434,7 +2488,7 @@ ON CONFLICT(name) DO UPDATE SET
     }
 
 
-    private bool QueueDetectedClientMod(string packagePath, DetectedModPackage detected)
+    private bool QueueDetectedClientMod(string packagePath, DetectedModPackage detected, int? overrideRevision = null)
     {
         if (!detected.HasClientMod || string.IsNullOrWhiteSpace(detected.ClientModName))
             return false;
@@ -2453,6 +2507,7 @@ ON CONFLICT(name) DO UPDATE SET
             pendingUpdate.OptionalDefaultState = detected.OptionalDefaultState;
             pendingUpdate.PendingChangeState = "update";
             pendingUpdate.NewVersion = NormalizeVersionForStorage(detected.ClientVersion, pendingUpdate.Version);
+            pendingUpdate.NewRevision = overrideRevision;
             _pendingChanges[pendingUpdate.Name] = pendingUpdate;
             return true;
         }
@@ -2467,7 +2522,8 @@ ON CONFLICT(name) DO UPDATE SET
             IsOptional = detected.IsOptional,
             OptionalDefaultState = detected.OptionalDefaultState,
             PendingChangeState = "add",
-            NewVersion = null
+            NewVersion = null,
+            NewRevision = overrideRevision
         };
         return true;
     }
@@ -2601,6 +2657,8 @@ ON CONFLICT(name) DO UPDATE SET
             }
             var normalizedNewVersion = NormalizeVersionForStorage(updatedMod.NewVersion, selected.Version);
             string? selectedServerVersion = null;
+            int? selectedPluginRevision = null;
+            int? selectedServerRevision = null;
             var includePluginUpdate = true;
             var includeServerUpdate = false;
             var skipPluginUpdateOnSameVersion = false;
@@ -2616,6 +2674,7 @@ ON CONFLICT(name) DO UPDATE SET
                 if (!ShowIncomingFilePreview(selectedFilePath, updatedMod.Name, null,
                         out var keepOldConfigs, out var serverModsWithConfigConflicts, out var excludedSourcePaths, out var includedOldFiles,
                         out var selectedPluginVersion, out selectedServerVersion,
+                        out selectedPluginRevision, out selectedServerRevision,
                         out includePluginUpdate, out includeServerUpdate,
                         out skipPluginUpdateOnSameVersion, out skipServerUpdateOnSameVersion,
                         out selectedPluginIsFolderMod, out selectedPluginAllowOnHeadless,
@@ -2652,11 +2711,12 @@ ON CONFLICT(name) DO UPDATE SET
                 // Mark as update pending
                 updatedMod.PendingChangeState = "update";
                 updatedMod.NewVersion = normalizedNewVersion;
+                updatedMod.NewRevision = selectedPluginRevision;
                 _pendingChanges[selected.Name] = updatedMod;
             }
 
             var syncedServerMod = includeServerUpdate && !skipServerUpdateOnSameVersion
-                ? QueueServerPendingFromBundleZip(selectedFilePath, ServerStateUpdateBoth, selectedServerVersion)
+                ? QueueServerPendingFromBundleZip(selectedFilePath, ServerStateUpdateBoth, selectedServerVersion, selectedServerRevision)
                 : null;
 
             if (!includePluginUpdate && !includeServerUpdate)
@@ -3125,6 +3185,7 @@ ON CONFLICT(file_name) DO UPDATE SET
 
             dbMods.TryGetValue(name, out var dbEntry);
             string dbVer = dbEntry?.Version ?? "-";
+            string dbRev = dbEntry != null ? Math.Max(0, dbEntry.Revision).ToString() : "-";
 
             // Build status
             var statusParts = new List<string>();
@@ -3167,6 +3228,7 @@ ON CONFLICT(file_name) DO UPDATE SET
                 Name = name,
                 FileVersion = fileVer,
                 DbVersion = dbVer,
+                DbRevision = dbRev,
                 Source = source,
                 Status = string.Join(" · ", statusParts),
                 StatusBrush = brush,
@@ -3198,6 +3260,7 @@ ON CONFLICT(file_name) DO UPDATE SET
                 Name = name,
                 FileVersion = "-",
                 DbVersion = dbEntry.Version,
+                DbRevision = Math.Max(0, dbEntry.Revision).ToString(),
                 Source = "Database",
                 Status = string.Join(" · ", statusParts),
                 StatusBrush = brush,
@@ -3556,6 +3619,7 @@ ON CONFLICT(file_name) DO UPDATE SET
             using var command = connection.CreateCommand();
             command.CommandText = @"
 SELECT mod_name, change_type, old_version, new_version,
+       old_revision, new_revision,
        file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state
 FROM pending_changes 
 ORDER BY id;";
@@ -3567,11 +3631,13 @@ ORDER BY id;";
                 string changeType = reader.GetString(1);
                 string? oldVersion = reader.IsDBNull(2) ? null : reader.GetString(2);
                 string? newVersion = reader.IsDBNull(3) ? null : reader.GetString(3);
-                string fileName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
-                bool isFolderMod = !reader.IsDBNull(5) && reader.GetInt32(5) == 1;
-                bool allowOnHeadless = !reader.IsDBNull(6) && reader.GetInt32(6) == 1;
-                bool isOptional = !reader.IsDBNull(7) && reader.GetInt32(7) == 1;
-                bool optionalDefaultState = !reader.IsDBNull(8) && reader.GetInt32(8) == 1;
+                int oldRevision = reader.IsDBNull(4) ? 0 : reader.GetInt32(4);
+                int? newRevision = reader.IsDBNull(5) ? null : reader.GetInt32(5) is int rv && rv > 0 ? rv : (int?)null;
+                string fileName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+                bool isFolderMod = !reader.IsDBNull(7) && reader.GetInt32(7) == 1;
+                bool allowOnHeadless = !reader.IsDBNull(8) && reader.GetInt32(8) == 1;
+                bool isOptional = !reader.IsDBNull(9) && reader.GetInt32(9) == 1;
+                bool optionalDefaultState = !reader.IsDBNull(10) && reader.GetInt32(10) == 1;
 
                 dbMods.TryGetValue(modName, out var dbMod);
                 var mod = new ModInfo
@@ -3583,8 +3649,10 @@ ORDER BY id;";
                     AllowOnHeadless = allowOnHeadless || (dbMod?.AllowOnHeadless ?? false),
                     IsOptional = isOptional || (dbMod?.IsOptional ?? false),
                     OptionalDefaultState = optionalDefaultState || (dbMod?.OptionalDefaultState ?? false),
+                    Revision = oldRevision > 0 ? oldRevision : (dbMod?.Revision ?? 0),
                     PendingChangeState = changeType,
-                    NewVersion = string.IsNullOrWhiteSpace(newVersion) ? null : newVersion
+                    NewVersion = string.IsNullOrWhiteSpace(newVersion) ? null : newVersion,
+                    NewRevision = newRevision
                 };
                 _pendingChanges[modName] = mod;
             }
@@ -3627,13 +3695,15 @@ ORDER BY id;";
                 insertCmd.Transaction = tx;
                 insertCmd.CommandText = @"
 INSERT INTO pending_changes(
-    mod_name, change_type, old_version, new_version, created_utc,
+    mod_name, change_type, old_version, new_version, old_revision, new_revision, created_utc,
     file_name, is_folder_mod, allow_on_headless, is_optional, optional_default_state)
-VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState);";
+VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevision, $createdUtc, $fileName, $isFolderMod, $allowOnHeadless, $isOptional, $optionalDefaultState);";
                 insertCmd.Parameters.AddWithValue("$modName", name);
                 insertCmd.Parameters.AddWithValue("$changeType", mod.PendingChangeState);
                 insertCmd.Parameters.AddWithValue("$oldVersion", mod.Version ?? string.Empty);
                 insertCmd.Parameters.AddWithValue("$newVersion", mod.NewVersion ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$oldRevision", Math.Max(0, mod.Revision));
+                insertCmd.Parameters.AddWithValue("$newRevision", mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : (object)DBNull.Value);
                 insertCmd.Parameters.AddWithValue("$createdUtc", DateTime.UtcNow.ToString("O"));
                 insertCmd.Parameters.AddWithValue("$fileName", mod.FileName ?? string.Empty);
                 insertCmd.Parameters.AddWithValue("$isFolderMod", mod.IsFolderMod ? 1 : 0);
@@ -3679,7 +3749,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 ModType = "Client",
                 PendingChangeState = mod.PendingChangeState,
                 Version = mod.Version,
-                NewVersion = mod.NewVersion
+                NewVersion = mod.NewVersion,
+                Revision = mod.Revision,
+                NewRevision = mod.NewRevision
             });
         }
 
@@ -3691,7 +3763,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 ModType = "Server",
                 PendingChangeState = mod.PendingChangeState,
                 Version = mod.Version,
-                NewVersion = mod.NewVersion
+                NewVersion = mod.NewVersion,
+                Revision = mod.Revision,
+                NewRevision = mod.NewRevision
             });
         }
 
@@ -3938,6 +4012,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                 if (mod.PendingChangeState == "add")
                 {
                     mod.Version = NormalizeVersionForStorage(mod.Version, "0.0.0");
+                    mod.Revision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : 1;
                     EnsureClientPendingFileInStorage(mod);
                     UpsertModInDatabase(connection, mod);
                 }
@@ -3957,8 +4032,19 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
                             ArchiveExistingClientMod(existingUpdate);
 
                         EnsureClientPendingFileInStorage(mod, overwriteExisting: true);
-                        mod.Version = NormalizeVersionForStorage(mod.NewVersion, NormalizeVersionForStorage(mod.Version, "0.0.0"));
+                        var oldVersion = NormalizeVersionForStorage(mod.Version, "0.0.0");
+                        var targetVersion = NormalizeVersionForStorage(mod.NewVersion, oldVersion);
+                        var existingRevision = existingDbMods.TryGetValue(name, out var existingRevisionMod)
+                            ? Math.Max(0, existingRevisionMod.Revision)
+                            : Math.Max(0, mod.Revision);
+
+                        mod.Version = targetVersion;
+                        var effectiveNewRevision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision : (int?)null;
+                        mod.Revision = effectiveNewRevision ?? (string.Equals(oldVersion, targetVersion, StringComparison.OrdinalIgnoreCase)
+                            ? Math.Max(1, existingRevision + 1)
+                            : 1);
                         mod.NewVersion = null; // Clear the new version after applying
+                        mod.NewRevision = null;
                         UpsertModInDatabase(connection, mod);
                     }
                 }
@@ -4047,7 +4133,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
     {
         var mods = new List<ServerModInfo>();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT name, version, file_name FROM server_plugins ORDER BY name COLLATE NOCASE;";
+        command.CommandText = "SELECT name, version, file_name, COALESCE(revision, 0) FROM server_plugins ORDER BY name COLLATE NOCASE;";
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -4055,7 +4141,8 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
             {
                 Name = reader.GetString(0),
                 Version = reader.GetString(1),
-                FileName = reader.GetString(2)
+                FileName = reader.GetString(2),
+                Revision = reader.GetInt32(3)
             });
         }
         return mods;
@@ -4065,15 +4152,17 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $createdUtc, $fileName, 
     {
         using var command = connection.CreateCommand();
         command.CommandText = @"
-INSERT INTO server_plugins(name, version, file_name, updated_utc)
-VALUES($name, $version, $fileName, $updatedUtc)
+INSERT INTO server_plugins(name, version, file_name, revision, updated_utc)
+VALUES($name, $version, $fileName, $revision, $updatedUtc)
 ON CONFLICT(name) DO UPDATE SET
     version = excluded.version,
     file_name = excluded.file_name,
+    revision = excluded.revision,
     updated_utc = excluded.updated_utc;";
         command.Parameters.AddWithValue("$name", mod.Name);
         command.Parameters.AddWithValue("$version", mod.Version);
         command.Parameters.AddWithValue("$fileName", mod.FileName);
+        command.Parameters.AddWithValue("$revision", mod.Revision);
         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
     }
@@ -4112,21 +4201,63 @@ ON CONFLICT(name) DO UPDATE SET
         return modName + ".zip";
     }
 
-    private void UpsertServerModFromPending(SqliteConnection connection, ServerModInfo mod, string fallbackName)
-    {
-        var targetVersion = string.IsNullOrWhiteSpace(mod.NewVersion) ? mod.Version : mod.NewVersion!;
-        targetVersion = NormalizeVersionForStorage(targetVersion, "0.0.0");
+     private void UpsertServerModFromPending(SqliteConnection connection, ServerModInfo mod, string fallbackName)
+     {
+         var targetVersion = string.IsNullOrWhiteSpace(mod.NewVersion) ? mod.Version : mod.NewVersion!;
+         targetVersion = NormalizeVersionForStorage(targetVersion, "0.0.0");
 
-        var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
-        var targetFileName = EnsureServerModZipExistsForDatabase(targetName, mod.FileName);
+         var targetName = string.IsNullOrWhiteSpace(mod.Name) ? fallbackName : mod.Name;
+         var targetFileName = EnsureServerModZipExistsForDatabase(targetName, mod.FileName);
 
-        UpsertServerModInDatabase(connection, new ServerModInfo
-        {
-            Name = targetName,
-            Version = targetVersion,
-            FileName = targetFileName
-        });
-    }
+         // Calculate new revision based on version and explicit revision if provided
+         int newRevision = 0;
+         if (mod.PendingChangeState == "update")
+         {
+             // Load existing mod info from database
+             using var queryCmd = connection.CreateCommand();
+             queryCmd.CommandText = "SELECT version, COALESCE(revision, 0) FROM server_plugins WHERE name = $name COLLATE NOCASE;";
+             queryCmd.Parameters.AddWithValue("$name", targetName);
+
+             string existingVersion = "0.0.0";
+             int existingRevision = 0;
+
+             using var reader = queryCmd.ExecuteReader();
+             if (reader.Read())
+             {
+                 existingVersion = reader.GetString(0);
+                 existingRevision = reader.GetInt32(1);
+             }
+
+             // If NewRevision is explicitly set (and valid), use it; otherwise calculate from version change
+             if (mod.NewRevision.HasValue && mod.NewRevision.Value > 0)
+             {
+                 newRevision = mod.NewRevision.Value;
+             }
+             else if (string.Equals(existingVersion, targetVersion, StringComparison.OrdinalIgnoreCase))
+             {
+                 // Same version, same-version update: increment revision
+                 newRevision = Math.Max(1, existingRevision + 1);
+             }
+             else
+             {
+                 // Different version: reset to 1
+                 newRevision = 1;
+             }
+         }
+         else if (mod.PendingChangeState == "add")
+         {
+             // New mod starts at revision 1 or uses explicit NewRevision
+             newRevision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : 1;
+         }
+
+         UpsertServerModInDatabase(connection, new ServerModInfo
+         {
+             Name = targetName,
+             Version = targetVersion,
+             FileName = targetFileName,
+             Revision = newRevision
+         });
+     }
 
     private string EnsureServerModZipExistsForDatabase(string modName, string? preferredFileName)
     {
@@ -4314,6 +4445,7 @@ ON CONFLICT(name) DO UPDATE SET
                 using var conn = new SqliteConnection($"Data Source={_databasePath}");
                 conn.Open();
                 EnsureSptCoffeeSchema(conn);
+                MigratePluginsSchema(conn);
                 foreach (var m in LoadServerModsFromDatabase(conn))
                     dbMods[m.Name] = m;
             }
@@ -4339,6 +4471,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             dbMods.TryGetValue(name, out var dbEntry);
             string dbVer = dbEntry?.Version ?? "-";
+            string dbRev = dbEntry != null ? Math.Max(0, dbEntry.Revision).ToString() : "-";
             string localVer = info.Version;
 
             string status;
@@ -4369,6 +4502,7 @@ ON CONFLICT(name) DO UPDATE SET
                 Name = name,
                 LocalVersion = localVer,
                 DbVersion = dbVer,
+                DbRevision = dbRev,
                 FileName = dbEntry?.FileName ?? (name + ".zip"),
                 Status = status,
                 StatusBrush = brush,
@@ -4389,6 +4523,7 @@ ON CONFLICT(name) DO UPDATE SET
                 Name = name,
                 LocalVersion = "-",
                 DbVersion = dbEntry.Version,
+                DbRevision = Math.Max(0, dbEntry.Revision).ToString(),
                 FileName = dbEntry.FileName,
                 Status = "Not installed locally",
                 StatusBrush = Brushes.Yellow,
@@ -4577,6 +4712,7 @@ ON CONFLICT(name) DO UPDATE SET
         public string PluginAction { get; set; } = "None";
         public string? PluginOldVersion { get; set; }
         public string? PluginNewVersion { get; set; }
+        public int PluginOldRevision { get; set; }
         public bool PluginIsFolderMod { get; set; }
         public bool PluginAllowOnHeadless { get; set; }
         public bool PluginIsOptional { get; set; }
@@ -4584,6 +4720,7 @@ ON CONFLICT(name) DO UPDATE SET
         public string ServerAction { get; set; } = "None";
         public string? ServerOldVersion { get; set; }
         public string? ServerNewVersion { get; set; }
+        public int ServerOldRevision { get; set; }
     }
 
     private sealed class OldPackageFileCandidate
@@ -4605,6 +4742,8 @@ ON CONFLICT(name) DO UPDATE SET
         out List<FileChangePreviewItem> includedOldFiles,
         out string? selectedPluginVersion,
         out string? selectedServerVersion,
+        out int? selectedPluginRevision,
+        out int? selectedServerRevision,
         out bool includePluginUpdate,
         out bool includeServerUpdate,
         out bool skipPluginUpdateOnSameVersion,
@@ -4620,6 +4759,8 @@ ON CONFLICT(name) DO UPDATE SET
         includedOldFiles = new List<FileChangePreviewItem>();
         selectedPluginVersion = null;
         selectedServerVersion = null;
+        selectedPluginRevision = null;
+        selectedServerRevision = null;
         includePluginUpdate = false;
         includeServerUpdate = false;
         skipPluginUpdateOnSameVersion = false;
@@ -4656,9 +4797,11 @@ ON CONFLICT(name) DO UPDATE SET
             preview.PluginAllowOnHeadless,
             preview.PluginIsOptional,
             preview.PluginOptionalDefaultState,
+            preview.PluginOldRevision,
             preview.ServerAction,
             preview.ServerOldVersion,
-            preview.ServerNewVersion)
+            preview.ServerNewVersion,
+            preview.ServerOldRevision)
         {
             Owner = this
         };
@@ -4674,6 +4817,8 @@ ON CONFLICT(name) DO UPDATE SET
             .ToList();
         selectedPluginVersion = window.SelectedPluginVersion;
         selectedServerVersion = window.SelectedServerVersion;
+        selectedPluginRevision = window.SelectedPluginRevision;
+        selectedServerRevision = window.SelectedServerRevision;
         includePluginUpdate = window.IncludePluginUpdate;
         includeServerUpdate = window.IncludeServerUpdate;
         skipPluginUpdateOnSameVersion = window.SkipPluginUpdateOnSameVersion;
@@ -4700,6 +4845,7 @@ ON CONFLICT(name) DO UPDATE SET
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
 
             var raw = GetSetting(connection, PreviewExcludedPathsSettingKey);
             if (string.IsNullOrWhiteSpace(raw))
@@ -4739,6 +4885,7 @@ ON CONFLICT(name) DO UPDATE SET
             using var connection = new SqliteConnection($"Data Source={_databasePath}");
             connection.Open();
             EnsureSptCoffeeSchema(connection);
+            MigratePendingChangesSchema(connection);
 
             var json = JsonSerializer.Serialize(normalized);
             UpsertSetting(connection, PreviewExcludedPathsSettingKey, json);
@@ -4768,6 +4915,7 @@ ON CONFLICT(name) DO UPDATE SET
             var detectedPluginVersion = FileVersionInfo.GetVersionInfo(sourcePath).FileVersion;
             preview.PluginOldVersion = pluginCurrent?.Version;
             preview.PluginNewVersion = NormalizeVersionForStorage(detectedPluginVersion, pluginCurrent?.Version ?? "0.0.0");
+            preview.PluginOldRevision = Math.Max(0, pluginCurrent?.Revision ?? 0);
             preview.PluginAction = pluginCurrent == null ? "Add" : "Update";
             preview.PluginIsFolderMod = false;
             preview.PluginAllowOnHeadless = pluginCurrent?.AllowOnHeadless ?? false;
@@ -4821,6 +4969,9 @@ ON CONFLICT(name) DO UPDATE SET
         var currentServerVersion = !string.IsNullOrWhiteSpace(preview.DetectedServerModName)
             ? GetCurrentServerVersionForPending(preview.DetectedServerModName)
             : string.Empty;
+        var currentServerRevision = !string.IsNullOrWhiteSpace(preview.DetectedServerModName)
+            ? GetCurrentServerRevisionForPending(preview.DetectedServerModName)
+            : 0;
         var detectedServerVersion = !string.IsNullOrWhiteSpace(detectedFromBundle.ServerModVersion)
             ? detectedFromBundle.ServerModVersion
             : ExtractServerModVersionFromZip(sourcePath, preview.DetectedServerModName);
@@ -4828,6 +4979,7 @@ ON CONFLICT(name) DO UPDATE SET
 
         preview.PluginOldVersion = currentClient?.Version;
         preview.PluginNewVersion = IsVersionPlaceholder(detectedPluginVersionFromZip) ? null : detectedPluginVersionFromZip;
+        preview.PluginOldRevision = Math.Max(0, currentClient?.Revision ?? 0);
         preview.PluginAction = string.IsNullOrWhiteSpace(preview.DetectedPluginName)
             ? "None"
             : currentClient == null ? "Add" : "Update";
@@ -4838,6 +4990,7 @@ ON CONFLICT(name) DO UPDATE SET
 
         preview.ServerOldVersion = currentServerVersion;
         preview.ServerNewVersion = IsVersionPlaceholder(detectedServerVersion) ? null : detectedServerVersion;
+        preview.ServerOldRevision = Math.Max(0, currentServerRevision);
         preview.ServerAction = string.IsNullOrWhiteSpace(preview.DetectedServerModName)
             ? "None"
             : string.IsNullOrWhiteSpace(currentServerVersion) ? "Add" : "Update";
@@ -4846,6 +4999,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             preview.PluginOldVersion = null;
             preview.PluginNewVersion = null;
+            preview.PluginOldRevision = 0;
             preview.PluginIsFolderMod = false;
             preview.PluginAllowOnHeadless = false;
             preview.PluginIsOptional = false;
@@ -4856,6 +5010,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             preview.ServerOldVersion = null;
             preview.ServerNewVersion = null;
+            preview.ServerOldRevision = 0;
         }
 
         var actionParts = new List<string>();
@@ -5594,7 +5749,7 @@ ON CONFLICT(name) DO UPDATE SET
         return state;
     }
 
-    private string? QueueServerPendingFromBundleZip(string? zipPath, string serverPendingState, string? overrideServerVersion = null)
+    private string? QueueServerPendingFromBundleZip(string? zipPath, string serverPendingState, string? overrideServerVersion = null, int? overrideServerRevision = null)
     {
         if (string.IsNullOrWhiteSpace(zipPath)
             || !zipPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
@@ -5626,7 +5781,9 @@ ON CONFLICT(name) DO UPDATE SET
         {
             Name = bundle.ServerModName,
             Version = oldVersion,
+            Revision = GetCurrentServerRevisionForPending(bundle.ServerModName),
             NewVersion = serverVersion,
+            NewRevision = overrideServerRevision,
             FileName = storedFileName,
             PendingChangeState = effectiveServerState
         };
@@ -5659,10 +5816,45 @@ ON CONFLICT(name) DO UPDATE SET
         return string.Empty;
     }
 
+    private int GetCurrentServerRevisionForPending(string serverModName)
+    {
+        if (_pendingServerChanges.TryGetValue(serverModName, out var pendingServer))
+        {
+            if (pendingServer.NewRevision.HasValue)
+                return pendingServer.NewRevision.Value;
+
+            return Math.Max(0, pendingServer.Revision);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_databasePath) && File.Exists(_databasePath))
+        {
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_databasePath}");
+                connection.Open();
+
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT COALESCE(revision, 0) FROM server_plugins WHERE name = $name COLLATE NOCASE LIMIT 1;";
+                command.Parameters.AddWithValue("$name", serverModName);
+
+                var scalar = command.ExecuteScalar();
+                if (scalar != null && int.TryParse(scalar.ToString(), out var revision))
+                    return Math.Max(0, revision);
+            }
+            catch
+            {
+                // Keep preview flow non-blocking if revision lookup fails.
+            }
+        }
+
+        return 0;
+    }
+
     private void QueueClientPendingFromBundleZip(
         string zipPath,
         string clientPendingState,
         string? overridePluginVersion = null,
+        int? overridePluginRevision = null,
         bool? overrideIsFolderMod = null,
         bool? overrideAllowOnHeadless = null,
         bool? overrideIsOptional = null,
@@ -5712,6 +5904,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             pendingClient.PendingChangeState = "update";
             pendingClient.NewVersion = NormalizeVersionForStorage(detectedPluginVersion, NormalizeVersionForStorage(pendingClient.Version, "0.0.0"));
+            pendingClient.NewRevision = overridePluginRevision;
             if (string.IsNullOrWhiteSpace(pendingClient.Version))
                 pendingClient.Version = "0.0.0";
         }
@@ -5719,6 +5912,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             pendingClient.PendingChangeState = "add";
             pendingClient.NewVersion = null;
+            pendingClient.NewRevision = overridePluginRevision;
             pendingClient.Version = NormalizeVersionForStorage(detectedPluginVersion, NormalizeVersionForStorage(pendingClient.Version, "0.0.0"));
         }
 
@@ -5788,8 +5982,10 @@ ON CONFLICT(name) DO UPDATE SET
             AllowOnHeadless = source.AllowOnHeadless,
             IsOptional = source.IsOptional,
             OptionalDefaultState = source.OptionalDefaultState,
+            Revision = source.Revision,
             PendingChangeState = source.PendingChangeState,
-            NewVersion = source.NewVersion
+            NewVersion = source.NewVersion,
+            NewRevision = source.NewRevision
         };
     }
 
@@ -5805,6 +6001,7 @@ ON CONFLICT(name) DO UPDATE SET
         {
             Name = selected.Name,
             Version = oldVersion,
+            Revision = int.TryParse(selected.DbRevision, out var selectedDbRevision) ? selectedDbRevision : 0,
             NewVersion = selected.LocalVersion,
             FileName = zipFileName,
             PendingChangeState = pendingState
@@ -5840,6 +6037,7 @@ ON CONFLICT(name) DO UPDATE SET
             if (!ShowIncomingFilePreview(sourceArchivePath, null, selected.Name,
                     out var keepOldConfigs, out var serverModsWithConfigConflicts, out var excludedSourcePaths, out var includedOldFiles,
                     out var selectedPluginVersion, out var selectedServerVersion,
+                    out var selectedPluginRevision, out var selectedServerRevision,
                     out var includePluginUpdate, out var includeServerUpdate,
                     out var skipPluginUpdateOnSameVersion, out var skipServerUpdateOnSameVersion,
                     out var selectedPluginIsFolderMod, out var selectedPluginAllowOnHeadless,
@@ -5896,7 +6094,9 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     Name = selected.Name,
                     Version = oldVersion,
+                    Revision = int.TryParse(selected.DbRevision, out var selectedDbRevision) ? selectedDbRevision : 0,
                     NewVersion = newVersion,
+                    NewRevision = selectedServerRevision,
                     FileName = storedFileName ?? string.Empty,
                     PendingChangeState = effectivePendingState
                 };
@@ -5914,6 +6114,7 @@ ON CONFLICT(name) DO UPDATE SET
                     selectedZipPath,
                     clientPendingState,
                     selectedPluginVersion,
+                    selectedPluginRevision,
                     selectedPluginIsFolderMod,
                     selectedPluginAllowOnHeadless,
                     selectedPluginIsOptional,
@@ -6251,6 +6452,7 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     Name = selected.Name,
                     Version = HasDb(selected) ? selected.DbVersion : selected.LocalVersion,
+                    Revision = int.TryParse(selected.DbRevision, out var selectedDbRevision) ? selectedDbRevision : 0,
                     FileName = selected.FileName,
                     PendingChangeState = ServerStateDeleteBoth
                 };
@@ -6452,6 +6654,7 @@ ON CONFLICT(name) DO UPDATE SET
                 {
                     Name = selected.Name,
                     Version = selected.LocalVersion,
+                    Revision = int.TryParse(selected.DbRevision, out var selectedDbRevision) ? selectedDbRevision : 0,
                     FileName = selected.FileName,
                     PendingChangeState = ServerStateDeleteLocal
                 };
@@ -6482,7 +6685,7 @@ ON CONFLICT(name) DO UPDATE SET
 
             using var command = connection.CreateCommand();
             command.CommandText = @"
-SELECT mod_name, change_type, old_version, new_version, file_name
+SELECT mod_name, change_type, old_version, new_version, old_revision, new_revision, file_name
 FROM server_pending_changes
 ORDER BY id;";
             using var reader = command.ExecuteReader();
@@ -6494,7 +6697,9 @@ ORDER BY id;";
                     PendingChangeState = reader.GetString(1),
                     Version = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
                     NewVersion = reader.IsDBNull(3) || string.IsNullOrEmpty(reader.GetString(3)) ? null : reader.GetString(3),
-                    FileName = reader.IsDBNull(4) ? string.Empty : reader.GetString(4)
+                    Revision = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                    NewRevision = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    FileName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6)
                 };
                 _pendingServerChanges[mod.Name] = mod;
             }
@@ -6528,12 +6733,14 @@ ORDER BY id;";
                 using var insertCmd = connection.CreateCommand();
                 insertCmd.Transaction = tx;
                 insertCmd.CommandText = @"
-INSERT INTO server_pending_changes(mod_name, change_type, old_version, new_version, file_name, created_utc)
-VALUES($modName, $changeType, $oldVersion, $newVersion, $fileName, $createdUtc);";
+INSERT INTO server_pending_changes(mod_name, change_type, old_version, new_version, old_revision, new_revision, file_name, created_utc)
+VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevision, $fileName, $createdUtc);";
                 insertCmd.Parameters.AddWithValue("$modName", name);
                 insertCmd.Parameters.AddWithValue("$changeType", mod.PendingChangeState);
                 insertCmd.Parameters.AddWithValue("$oldVersion", mod.Version ?? string.Empty);
                 insertCmd.Parameters.AddWithValue("$newVersion", mod.NewVersion ?? string.Empty);
+                insertCmd.Parameters.AddWithValue("$oldRevision", Math.Max(0, mod.Revision));
+                insertCmd.Parameters.AddWithValue("$newRevision", mod.NewRevision.HasValue ? mod.NewRevision.Value : (object)DBNull.Value);
                 insertCmd.Parameters.AddWithValue("$fileName", mod.FileName ?? string.Empty);
                 insertCmd.Parameters.AddWithValue("$createdUtc", DateTime.UtcNow.ToString("O"));
                 insertCmd.ExecuteNonQuery();
@@ -6569,6 +6776,7 @@ public class InstalledPluginViewModel
     public string Name { get; set; } = string.Empty;
     public string FileVersion { get; set; } = string.Empty;
     public string DbVersion { get; set; } = string.Empty;
+    public string DbRevision { get; set; } = "-";
     public string Source { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public System.Windows.Media.Brush StatusBrush { get; set; } = System.Windows.Media.Brushes.White;
@@ -6579,6 +6787,7 @@ public class ServerModViewModel
 {
     public string Name { get; set; } = string.Empty;
     public string DbVersion { get; set; } = string.Empty;
+    public string DbRevision { get; set; } = "-";
     public string LocalVersion { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
@@ -6617,6 +6826,10 @@ public class PendingChangeEntry
     public string PendingChangeState { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
     public string? NewVersion { get; set; }
+    public int Revision { get; set; }
+    public int? NewRevision { get; set; }
+    public string RevisionDisplay => Revision > 0 ? Revision.ToString() : "-";
+    public string NewRevisionDisplay => NewRevision.HasValue ? NewRevision.Value.ToString() : "-";
     public bool IsServerMod => string.Equals(ModType, "Server", StringComparison.OrdinalIgnoreCase);
     public string PendingStateKind => PendingChangeState.StartsWith("add", StringComparison.OrdinalIgnoreCase) ? "add"
         : PendingChangeState.StartsWith("delete", StringComparison.OrdinalIgnoreCase) ? "delete"

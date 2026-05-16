@@ -548,6 +548,7 @@ CREATE TABLE IF NOT EXISTS plugins (
     version TEXT NOT NULL,
     file_name TEXT NOT NULL,
     is_folder_mod INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
     updated_utc TEXT NOT NULL
 );
 
@@ -573,6 +574,18 @@ CREATE TABLE IF NOT EXISTS admins (
     updated_utc TEXT NOT NULL
 );";
         command.ExecuteNonQuery();
+
+        // Migrate schema if needed
+        try
+        {
+            using var alterCmd = connection.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE plugins ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;";
+            alterCmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Column already exists — safe to ignore
+        }
     }
 
     public static List<ModInfo> ReadPlugins(string dbPath)
@@ -582,7 +595,7 @@ CREATE TABLE IF NOT EXISTS admins (
         connection.Open();
 
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT name, version, file_name, is_folder_mod FROM plugins ORDER BY name COLLATE NOCASE;";
+        command.CommandText = "SELECT name, version, file_name, is_folder_mod, COALESCE(revision, 0) FROM plugins ORDER BY name COLLATE NOCASE;";
 
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -592,7 +605,8 @@ CREATE TABLE IF NOT EXISTS admins (
                 Name = reader.GetString(0),
                 Version = reader.GetString(1),
                 FileName = reader.GetString(2),
-                IsFolderMod = reader.GetInt32(3) == 1
+                IsFolderMod = reader.GetInt32(3) == 1,
+                Revision = reader.GetInt32(4)
             });
         }
 
@@ -921,20 +935,102 @@ ON CONFLICT(secret) DO UPDATE SET
         return command.ExecuteScalar() as string;
     }
 
-    private static void UpsertSetting(SqliteConnection connection, string key, string value)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = @"
+     private static void UpsertSetting(SqliteConnection connection, string key, string value)
+     {
+         using var command = connection.CreateCommand();
+         command.CommandText = @"
 INSERT INTO settings(key, value, updated_utc)
 VALUES($key, $value, $updatedUtc)
 ON CONFLICT(key) DO UPDATE SET
-    value = excluded.value,
-    updated_utc = excluded.updated_utc;";
-        command.Parameters.AddWithValue("$key", key);
-        command.Parameters.AddWithValue("$value", value);
-        command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
-        command.ExecuteNonQuery();
-    }
+     value = excluded.value,
+     updated_utc = excluded.updated_utc;";
+         command.Parameters.AddWithValue("$key", key);
+         command.Parameters.AddWithValue("$value", value);
+         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+         command.ExecuteNonQuery();
+     }
+
+     /// <summary>
+     /// Gets the current revision of a plugin from the database.
+     /// </summary>
+     public static int GetPluginRevision(string dbPath, string pluginName)
+     {
+         using var connection = new SqliteConnection($"Data Source={dbPath}");
+         connection.Open();
+
+         using var command = connection.CreateCommand();
+         command.CommandText = "SELECT COALESCE(revision, 1) FROM plugins WHERE name = $name LIMIT 1;";
+         command.Parameters.AddWithValue("$name", pluginName);
+
+         var result = command.ExecuteScalar();
+         return result != null ? Convert.ToInt32(result) : 1;
+     }
+
+     /// <summary>
+     /// Updates the revision of a plugin in the database.
+     /// </summary>
+     public static void UpdatePluginRevision(string dbPath, string pluginName, int revision)
+     {
+         using var connection = new SqliteConnection($"Data Source={dbPath}");
+         connection.Open();
+
+         using var command = connection.CreateCommand();
+         command.CommandText = "UPDATE plugins SET revision = $revision, updated_utc = $updatedUtc WHERE name = $name;";
+         command.Parameters.AddWithValue("$revision", revision);
+         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+         command.Parameters.AddWithValue("$name", pluginName);
+         command.ExecuteNonQuery();
+     }
+
+     /// <summary>
+     /// Records a pending plugin change (add, update, or delete) with revision tracking.
+     /// </summary>
+     public static void RecordPendingPluginChange(string dbPath, string pluginName, string version, string fileName, bool isFolderMod, string changeType, int? newRevision = null)
+     {
+         using var connection = new SqliteConnection($"Data Source={dbPath}");
+         connection.Open();
+
+         using var command = connection.CreateCommand();
+
+         if (changeType == "delete")
+         {
+             // For delete, we remove the pending state
+             command.CommandText = "DELETE FROM plugins WHERE name = $name;";
+         }
+         else if (changeType == "add")
+         {
+             // For add, insert new plugin with revision 1
+             command.CommandText = @"
+INSERT INTO plugins(name, version, file_name, is_folder_mod, revision, updated_utc)
+VALUES($name, $version, $fileName, $isFolderMod, 1, $updatedUtc)
+ON CONFLICT(name) DO UPDATE SET
+     version = excluded.version,
+     file_name = excluded.file_name,
+     is_folder_mod = excluded.is_folder_mod,
+     revision = 1,
+     updated_utc = excluded.updated_utc;";
+             command.Parameters.AddWithValue("$version", version);
+             command.Parameters.AddWithValue("$fileName", fileName);
+             command.Parameters.AddWithValue("$isFolderMod", isFolderMod ? 1 : 0);
+         }
+         else if (changeType == "update")
+         {
+             // For update, update with new version and revision
+             var targetRevision = newRevision ?? GetPluginRevision(dbPath, pluginName) + 1;
+             command.CommandText = @"
+UPDATE plugins 
+SET version = $version, file_name = $fileName, is_folder_mod = $isFolderMod, revision = $revision, updated_utc = $updatedUtc
+WHERE name = $name;";
+             command.Parameters.AddWithValue("$version", version);
+             command.Parameters.AddWithValue("$fileName", fileName);
+             command.Parameters.AddWithValue("$isFolderMod", isFolderMod ? 1 : 0);
+             command.Parameters.AddWithValue("$revision", targetRevision);
+         }
+
+         command.Parameters.AddWithValue("$name", pluginName);
+         command.Parameters.AddWithValue("$updatedUtc", DateTime.UtcNow.ToString("O"));
+         command.ExecuteNonQuery();
+     }
 }
 
 public static class SptPlayerPresenceReader

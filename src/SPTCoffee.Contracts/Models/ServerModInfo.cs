@@ -13,6 +13,9 @@ public class ServerModInfo
     [JsonPropertyName("FileName")]
     public string FileName { get; set; } = string.Empty;
 
+    [JsonPropertyName("Revision")]
+    public int Revision { get; set; }
+
     /// <summary>"add", "delete", or "update"</summary>
     [JsonIgnore]
     public string PendingChangeState { get; set; } = string.Empty;
@@ -20,6 +23,10 @@ public class ServerModInfo
     /// <summary>Target version for pending update operations.</summary>
     [JsonIgnore]
     public string? NewVersion { get; set; }
+
+    /// <summary>Target revision for pending same-version update operations.</summary>
+    [JsonIgnore]
+    public int? NewRevision { get; set; }
 
     /// <summary>Absolute path to the local mod folder – populated during scan, used when zipping.</summary>
     [JsonIgnore]
