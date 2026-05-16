@@ -11,74 +11,73 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- Header -->
         <sptServerManager:WindowHeader Grid.Row="0" HeaderText="Mod Settings" />
 
-        <StackPanel Grid.Row="1" Margin="16">
-            <!-- Name -->
-            <Label Content="Name:" Foreground="White"/>
-            <TextBox x:Name="NameBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
-                     Margin="0,0,0,8" Padding="4"/>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="16,16,16,8">
+                <!-- Name -->
+                <Label Content="Name:" Foreground="White"/>
+                <TextBox x:Name="NameBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
+                         Margin="0,0,0,8" Padding="4"/>
 
-            <!-- Version -->
-            <Label Content="Version:" Foreground="White"/>
-            <TextBox x:Name="VersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
-                     Margin="0,0,0,8" Padding="4"/>
+                <!-- Version -->
+                <Label Content="Version:" Foreground="White"/>
+                <TextBox x:Name="VersionBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
+                         Margin="0,0,0,8" Padding="4"/>
 
-            <!-- FileName -->
-            <Label Content="File Name (e.g. MyMod.zip):" Foreground="White"/>
-            <TextBox x:Name="FileNameBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
-                     Margin="0,0,0,8" Padding="4"/>
+                <!-- FileName -->
+                <Label Content="File Name (e.g. MyMod.zip):" Foreground="White"/>
+                <TextBox x:Name="FileNameBox" Background="#2d2d30" Foreground="White" BorderBrush="#555"
+                         Margin="0,0,0,8" Padding="4"/>
 
-            <!-- File picker -->
-            <Label Content="Select File:" Foreground="White"/>
-            <Grid Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="SelectedFilePathTextBlock" Grid.Column="0" Text="-" Foreground="Gray" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
-                <Button Grid.Column="1" Content="Browse..." Width="84" Background="DodgerBlue" Foreground="White" Click="BrowseFile_Click"/>
-            </Grid>
+                <!-- File picker -->
+                <Label Content="Select File:" Foreground="White"/>
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="SelectedFilePathTextBlock" Grid.Column="0" Text="-" Foreground="Gray" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0"/>
+                    <Button Grid.Column="1" Content="Browse..." Width="84" Background="DodgerBlue" Foreground="White" Click="BrowseFile_Click"/>
+                </Grid>
 
-            <!-- Checkboxes -->
-            <CheckBox x:Name="IsFolderModCheck" Content="Is Folder Mod" Foreground="White" Margin="0,4"/>
-            <CheckBox x:Name="AllowOnHeadlessCheck" Content="Allow On Headless" Foreground="White" Margin="0,4"/>
-            <CheckBox x:Name="IsOptionalCheck" Content="Is Optional" Foreground="White" Margin="0,4"/>
-            <CheckBox x:Name="OptionalDefaultStateCheck" Content="Optional Default State (enabled by default)" Foreground="White" Margin="0,4"/>
+                <!-- Checkboxes -->
+                <CheckBox x:Name="IsFolderModCheck" Content="Is Folder Mod" Foreground="White" Margin="0,4"/>
+                <CheckBox x:Name="AllowOnHeadlessCheck" Content="Allow On Headless" Foreground="White" Margin="0,4"/>
+                <CheckBox x:Name="IsOptionalCheck" Content="Is Optional" Foreground="White" Margin="0,4"/>
+                <CheckBox x:Name="OptionalDefaultStateCheck" Content="Optional Default State (enabled by default)" Foreground="White" Margin="0,4"/>
 
-            <Label Content="Archived old plugin backups:" Foreground="White" Margin="0,12,0,4"/>
-            <ListView x:Name="OldModsListView" Height="220" Background="#2d2d30" Foreground="White" BorderBrush="#555" SelectionMode="Extended">
-                <ListView.View>
-                    <GridView>
-                        <GridViewColumn Header="Mod" Width="170" DisplayMemberBinding="{Binding ModName}" />
-                        <GridViewColumn Header="Version" Width="90" DisplayMemberBinding="{Binding Version}" />
-                        <GridViewColumn Header="File" Width="220" DisplayMemberBinding="{Binding FileName}" />
-                        <GridViewColumn Header="Archived (UTC)" Width="170" DisplayMemberBinding="{Binding ArchivedUtc}" />
-                    </GridView>
-                </ListView.View>
-            </ListView>
-
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                <Button Content="Revert Selected (Queue Pending)" Width="210" Margin="0,0,8,0"
-                        Background="DarkSlateBlue" Foreground="White"
-                        Click="RevertOldBackup_Click"/>
-                <Button Content="Remove Selected Backup(s)" Width="180"
-                        Background="#6b2f2f" Foreground="White"
-                        Click="RemoveOldBackups_Click"/>
+                <Label Content="Archived old plugin backups:" Foreground="White" Margin="0,12,0,4"/>
+                <ListView x:Name="OldModsListView" Height="220" Background="#2d2d30" Foreground="White" BorderBrush="#555" SelectionMode="Extended">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Mod" Width="170" DisplayMemberBinding="{Binding ModName}" />
+                            <GridViewColumn Header="Version" Width="90" DisplayMemberBinding="{Binding Version}" />
+                            <GridViewColumn Header="File" Width="220" DisplayMemberBinding="{Binding FileName}" />
+                            <GridViewColumn Header="Archived (UTC)" Width="170" DisplayMemberBinding="{Binding ArchivedUtc}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
             </StackPanel>
+        </ScrollViewer>
 
-            <!-- Buttons -->
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-                <Button Content="Save" Width="80" Margin="0,0,8,0"
-                        Background="DarkOliveGreen" Foreground="White"
-                        Click="Save_Click"/>
-                <Button Content="Cancel" Width="80"
-                        Background="DarkRed" Foreground="White"
-                        Click="Cancel_Click"/>
-            </StackPanel>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="16,8,16,16">
+            <Button Content="Revert Selected (Queue Pending)" Width="210" Margin="0,0,8,0"
+                    Background="DarkSlateBlue" Foreground="White"
+                    Click="RevertOldBackup_Click"/>
+            <Button Content="Remove Selected Backup(s)" Width="180" Margin="0,0,8,0"
+                    Background="#6b2f2f" Foreground="White"
+                    Click="RemoveOldBackups_Click"/>
+            <Button Content="Save" Width="80" Margin="0,0,8,0"
+                    Background="DarkOliveGreen" Foreground="White"
+                    Click="Save_Click"/>
+            <Button Content="Cancel" Width="80"
+                    Background="DarkRed" Foreground="White"
+                    Click="Cancel_Click"/>
         </StackPanel>
     </Grid>
 </Window>
