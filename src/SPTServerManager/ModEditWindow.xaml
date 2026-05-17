@@ -69,7 +69,7 @@
             <Button Content="Revert Selected (Queue Pending)" Width="210" Margin="0,0,8,0"
                     Background="DarkSlateBlue" Foreground="White"
                     Click="RevertOldBackup_Click"/>
-            <Button Content="Remove Selected Backup(s)" Width="180" Margin="0,0,8,0"
+            <Button Content="Move Selected Backup(s) to Temp" Width="220" Margin="0,0,8,0"
                     Background="#6b2f2f" Foreground="White"
                     Click="RemoveOldBackups_Click"/>
             <Button Content="Save" Width="80" Margin="0,0,8,0"

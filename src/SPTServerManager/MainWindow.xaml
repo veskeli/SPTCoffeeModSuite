@@ -446,6 +446,8 @@
                                         Click="UpdateServerModLocal_Click" Background="DodgerBlue"/>
                                 <Button Content="Remove Local" Width="110" Margin="5,0,0,0"
                                         Click="RemoveServerModLocal_Click" Background="DarkRed"/>
+                                <Button Content="Backups" Width="110" Margin="5,0,0,0"
+                                        Click="ManageServerBackups_Click" Background="DarkSlateBlue"/>
                             </StackPanel>
                         </StackPanel>
                     </Grid>
@@ -584,6 +586,8 @@
                                      Click="RefreshPendingChanges_Click" Background="DodgerBlue"/>
                              <Button Content="Temp Diagnostics" Width="130" Margin="5,0,0,0"
                                      Click="ShowPendingTempDiagnostics_Click" Background="#555" Foreground="White"/>
+                             <Button Content="Cleanup Revert Temp" Width="155" Margin="5,0,0,0"
+                                     Click="CleanupRevertTempArtifacts_Click" Background="#6b2f2f" Foreground="White"/>
                              <Button Content="Revert Selected" Width="130" Margin="5,0,0,0"
                                      Click="RevertSelectedPendingChange_Click" Background="DarkRed"/>
                              <Button Content="Force Update Selected" Width="160" Margin="5,0,0,0"
@@ -591,6 +595,88 @@
                              <Button x:Name="UpdateChangesButton" Content="Update Changes" Width="300" Margin="5,0,0,0"
                                      Click="UpdatePendingChanges_Click" Background="Green"/>
                          </StackPanel>
+                    </Grid>
+                </TabItem>
+
+                <TabItem Header="Change History">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <ListView x:Name="ChangeHistoryListView" Grid.Row="0"
+                                  SelectionMode="Extended"
+                                  Background="#1e1e1e" Foreground="White"
+                                  BorderBrush="#3c3c3c" Margin="0,0,0,8">
+                            <ListView.Resources>
+                                <Style TargetType="GridViewColumnHeader">
+                                    <Setter Property="Background" Value="#232323"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                    <Setter Property="BorderBrush" Value="#3c3c3c"/>
+                                </Style>
+                            </ListView.Resources>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="ToolTip" Value="{Binding DetailsTooltip}"/>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Mod Name" Width="170" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Type" Width="70" DisplayMemberBinding="{Binding ModType}" />
+                                    <GridViewColumn Header="Scope" Width="95" DisplayMemberBinding="{Binding ScopeLabel}" />
+                                    <GridViewColumn Header="Action" Width="75" DisplayMemberBinding="{Binding ActionLabel}" />
+                                    <GridViewColumn Header="From" Width="125" DisplayMemberBinding="{Binding OldVersionDisplay}" />
+                                    <GridViewColumn Header="To" Width="125" DisplayMemberBinding="{Binding NewVersionDisplay}" />
+                                    <GridViewColumn Header="Files" Width="200" DisplayMemberBinding="{Binding FileChangeDisplay}" />
+                                    <GridViewColumn Header="Temp Size" Width="95" DisplayMemberBinding="{Binding TempArtifactSizeDisplay}" />
+                                    <GridViewColumn Header="Revert Status" Width="220">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding RevertStatus}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="White"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding CanRevert}" Value="True">
+                                                                    <Setter Property="Foreground" Value="LimeGreen"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding HasNewerActiveChange}" Value="True">
+                                                                    <Setter Property="Foreground" Value="Gold"/>
+                                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RevertStatus}" Value="Revert not possible (temp snapshot cleaned up)">
+                                                                    <Setter Property="Foreground" Value="Tomato"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RevertStatus}" Value="Already reverted">
+                                                                    <Setter Property="Foreground" Value="Gray"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="Applied (UTC)" Width="145" DisplayMemberBinding="{Binding CreatedUtcDisplay}" />
+                                    <GridViewColumn Header="Reverted (UTC)" Width="145" DisplayMemberBinding="{Binding RevertedUtcDisplay}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Height="30" HorizontalAlignment="Left">
+                            <Button Content="Refresh" Width="90"
+                                    Click="RefreshChangeHistory_Click" Background="DodgerBlue"/>
+                            <Button Content="Temp Diagnostics" Width="130" Margin="5,0,0,0"
+                                    Click="ShowPendingTempDiagnostics_Click" Background="#555" Foreground="White"/>
+                            <Button Content="Cleanup Revert Temp" Width="155" Margin="5,0,0,0"
+                                    Click="CleanupRevertTempArtifacts_Click" Background="#6b2f2f" Foreground="White"/>
+                            <Button Content="Revert Selected" Width="140" Margin="5,0,0,0"
+                                    Click="RevertSelectedHistoryChange_Click" Background="DarkSlateBlue"/>
+                        </StackPanel>
                     </Grid>
                 </TabItem>
 
@@ -778,6 +864,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
@@ -844,7 +931,23 @@
                             <TextBox Grid.Column="1" x:Name="SettingsLocalHeadlessPlayerIdTextBox"/>
                         </Grid>
 
-                        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Grid Grid.Row="5" Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="240"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Label Grid.Column="0" Content="Overall Temp Usage:" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" x:Name="SettingsTempUsageTextBlock" VerticalAlignment="Center" Foreground="Gold" Text="Unknown"/>
+                            <Button Grid.Column="2" Content="Refresh" Width="70" Margin="5,0,5,0" Click="RefreshSettingsTempUsage_Click" Background="DodgerBlue"/>
+                            <Button Grid.Column="3" Content="Diagnostics" Width="90" Margin="0,0,5,0" Click="ShowSettingsTempDiagnostics_Click" Background="#555" Foreground="White"/>
+                            <Button Grid.Column="4" Content="Cleanup" Width="80" Click="CleanupRevertTempArtifacts_Click" Background="#6b2f2f" Foreground="White"/>
+                        </Grid>
+
+                        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Content="Save Settings" Width="140" Click="SaveSettingsTab_Click" Background="ForestGreen"/>
                         </StackPanel>
                     </Grid>

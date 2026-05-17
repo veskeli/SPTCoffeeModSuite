@@ -75,7 +75,7 @@ public partial class ModEditWindow : Window
             {
                 if (File.Exists(backup.FilePath))
                 {
-                    File.Delete(backup.FilePath);
+                    MoveBackupFileToTempTrash(backup.FilePath, "RemovedPluginBackups");
                 }
 
                 var versionFolder = Path.GetDirectoryName(backup.FilePath);
@@ -114,6 +114,51 @@ public partial class ModEditWindow : Window
         }
 
         MessageBox.Show($"Removed {removed} archived backup(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private static void MoveBackupFileToTempTrash(string backupFilePath, string category)
+    {
+        var tempRoot = FindTempRoot(backupFilePath);
+        if (string.IsNullOrWhiteSpace(tempRoot))
+            throw new InvalidOperationException("Could not determine the temp backup root for the selected backup.");
+
+        var trashFolder = Path.Combine(tempRoot, "Trash", category);
+        Directory.CreateDirectory(trashFolder);
+
+        var destinationPath = GetUniqueDestinationPath(trashFolder, Path.GetFileName(backupFilePath));
+        File.Move(backupFilePath, destinationPath);
+    }
+
+    private static string? FindTempRoot(string path)
+    {
+        var directory = new DirectoryInfo(Path.GetDirectoryName(path) ?? string.Empty);
+        while (directory != null)
+        {
+            if (string.Equals(directory.Name, "Temp", StringComparison.OrdinalIgnoreCase))
+                return directory.FullName;
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+
+    private static string GetUniqueDestinationPath(string destinationFolder, string fileName)
+    {
+        var destinationPath = Path.Combine(destinationFolder, fileName);
+        if (!File.Exists(destinationPath) && !Directory.Exists(destinationPath))
+            return destinationPath;
+
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var extension = Path.GetExtension(fileName);
+        var suffix = 1;
+        do
+        {
+            destinationPath = Path.Combine(destinationFolder, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}_{suffix}{extension}");
+            suffix++;
+        } while (File.Exists(destinationPath) || Directory.Exists(destinationPath));
+
+        return destinationPath;
     }
 
     private void BrowseFile_Click(object sender, RoutedEventArgs e)

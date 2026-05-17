@@ -87,6 +87,7 @@ public partial class MainWindow : Window
     private const string UserBackupsFolderName = "UserBackups";
     private const string TempFolderName = "Temp";
     private const string OldPluginsFolderName = "OldPlugins";
+    private const string OldServerModsFolderName = "OldServerMods";
     private const string PendingTempFolderName = "PendingChangesTemp";
     private const string ServerStateAddBoth = "add_both";
     private const string ServerStateUpdateBoth = "update_both";
@@ -139,6 +140,7 @@ public partial class MainWindow : Window
         LoadConfig();
         EnsureStorageFolders();
         PopulateSettingsTabFromConfig();
+        UpdateSettingsTempUsageDisplay();
 
         // Auto-start if the -AutoStartServers argument was supplied
         var args = Environment.GetCommandLineArgs();
@@ -171,6 +173,7 @@ public partial class MainWindow : Window
         LoadPendingChangesFromDatabase();
         LoadServerPendingChangesFromDatabase();
         RefreshPendingChanges_Internal();
+        RefreshChangeHistoryView();
 
         // Load admin list
         RefreshAdminListView();
@@ -652,6 +655,26 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
     new_revision INTEGER,
     file_name TEXT NOT NULL DEFAULT '',
     created_utc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS change_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_name TEXT NOT NULL COLLATE NOCASE,
+    mod_type TEXT NOT NULL,
+    scope_kind TEXT NOT NULL DEFAULT '',
+    action_kind TEXT NOT NULL DEFAULT '',
+    old_version TEXT NOT NULL DEFAULT '',
+    new_version TEXT NOT NULL DEFAULT '',
+    old_revision INTEGER NOT NULL DEFAULT 0,
+    new_revision INTEGER NOT NULL DEFAULT 0,
+    old_file_name TEXT NOT NULL DEFAULT '',
+    new_file_name TEXT NOT NULL DEFAULT '',
+    before_json TEXT NOT NULL DEFAULT '',
+    after_json TEXT NOT NULL DEFAULT '',
+    snapshot_path TEXT NOT NULL DEFAULT '',
+    created_utc TEXT NOT NULL,
+    reverted_utc TEXT,
+    notes TEXT NOT NULL DEFAULT ''
 );";
         command.ExecuteNonQuery();
     }
@@ -702,6 +725,8 @@ CREATE TABLE IF NOT EXISTS server_pending_changes (
                 // Column already exists — safe to ignore.
             }
         }
+
+        MigrateChangeHistorySchema(connection);
     }
 
     private static void MigratePluginsSchema(SqliteConnection connection)
@@ -980,6 +1005,8 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         Directory.CreateDirectory(GetServerModZipFolder(_exeFolder));
         Directory.CreateDirectory(GetUserBackupsFolder(_exeFolder));
         Directory.CreateDirectory(GetOldPluginsFolder(_exeFolder));
+        Directory.CreateDirectory(GetOldServerModsFolder(_exeFolder));
+        Directory.CreateDirectory(GetTempTrashFolder(_exeFolder));
         Directory.CreateDirectory(GetPendingClientFilesFolder(_exeFolder));
         Directory.CreateDirectory(GetPendingServerFilesFolder(_exeFolder));
     }
@@ -993,6 +1020,7 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
     private static string GetUserBackupsFolder(string rootFolder) => Path.Combine(rootFolder, UserBackupsFolderName);
     private static string GetTempFolder(string rootFolder) => Path.Combine(rootFolder, TempFolderName);
     private static string GetOldPluginsFolder(string rootFolder) => Path.Combine(GetTempFolder(rootFolder), OldPluginsFolderName);
+    private static string GetOldServerModsFolder(string rootFolder) => Path.Combine(GetTempFolder(rootFolder), OldServerModsFolderName);
     private static string GetPendingTempFolder(string rootFolder) => Path.Combine(rootFolder, PendingTempFolderName);
     private static string GetPendingClientFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ClientFiles");
     private static string GetPendingServerFilesFolder(string rootFolder) => Path.Combine(GetPendingTempFolder(rootFolder), "ServerFiles");
@@ -1122,17 +1150,17 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
     }
 
-    private void ArchiveExistingClientMod(ModInfo existingMod)
+    private string? ArchiveExistingClientMod(ModInfo existingMod)
     {
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
 
         if (string.IsNullOrWhiteSpace(existingMod.FileName))
-            return;
+            return null;
 
         var storagePath = Path.Combine(GetPluginZipFolder(_exeFolder), existingMod.FileName);
         if (!File.Exists(storagePath))
-            return;
+            return null;
 
         var modFolderName = SanitizePathSegment(existingMod.Name);
         var versionFolderName = SanitizePathSegment(NormalizeVersionForStorage(existingMod.Version, "unknown"));
@@ -1149,6 +1177,32 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
         }
 
         File.Move(storagePath, destinationPath);
+        return destinationPath;
+    }
+
+    private string? ArchiveExistingLocalServerMod(string modName, string modFolderPath)
+    {
+        if (_exeFolder == null)
+            throw new InvalidOperationException("Executable folder not determined.");
+
+        if (string.IsNullOrWhiteSpace(modName) || !Directory.Exists(modFolderPath))
+            return null;
+
+        var versionFolderName = SanitizePathSegment(NormalizeVersionForStorage(ExtractServerModVersion(modFolderPath), "unknown"));
+        var archiveFolder = Path.Combine(GetOldServerModsFolder(_exeFolder), SanitizePathSegment(modName), versionFolderName);
+        Directory.CreateDirectory(archiveFolder);
+
+        var fileName = SanitizePathSegment(modName) + ".zip";
+        var destinationPath = Path.Combine(archiveFolder, fileName);
+        if (File.Exists(destinationPath))
+        {
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            var ext = Path.GetExtension(fileName);
+            destinationPath = Path.Combine(archiveFolder, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}{ext}");
+        }
+
+        ZipFile.CreateFromDirectory(modFolderPath, destinationPath, CompressionLevel.Optimal, false);
+        return destinationPath;
     }
 
     private List<OldPluginBackupEntry> LoadOldPluginBackups()
@@ -1170,6 +1224,42 @@ VALUES($fileName, $lastModifiedUtc, $isEnforced, $updatedUtc);";
                 foreach (var filePath in Directory.GetFiles(versionDir, "*.zip", SearchOption.TopDirectoryOnly))
                 {
                     result.Add(new OldPluginBackupEntry
+                    {
+                        ModName = modName,
+                        Version = version,
+                        FileName = Path.GetFileName(filePath),
+                        FilePath = filePath,
+                        ArchivedUtc = File.GetLastWriteTimeUtc(filePath)
+                    });
+                }
+            }
+        }
+
+        return result
+            .OrderByDescending(x => x.ArchivedUtc)
+            .ThenBy(x => x.ModName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private List<OldServerModBackupEntry> LoadOldServerModBackups()
+    {
+        if (_exeFolder == null)
+            return new List<OldServerModBackupEntry>();
+
+        var root = GetOldServerModsFolder(_exeFolder);
+        if (!Directory.Exists(root))
+            return new List<OldServerModBackupEntry>();
+
+        var result = new List<OldServerModBackupEntry>();
+        foreach (var modDir in Directory.GetDirectories(root))
+        {
+            var modName = Path.GetFileName(modDir);
+            foreach (var versionDir in Directory.GetDirectories(modDir))
+            {
+                var version = Path.GetFileName(versionDir);
+                foreach (var filePath in Directory.GetFiles(versionDir, "*.zip", SearchOption.TopDirectoryOnly))
+                {
+                    result.Add(new OldServerModBackupEntry
                     {
                         ModName = modName,
                         Version = version,
@@ -1401,6 +1491,29 @@ ON CONFLICT(key) DO UPDATE SET
         SettingsAdditionalModsTextBox.Text = Config.AdditionalModsPath;
         SettingsHeadlessFolderTextBox.Text = Config.HeadlessFolder;
         SettingsLocalHeadlessPlayerIdTextBox.Text = Config.LocalHeadlessPlayerId;
+        UpdateSettingsTempUsageDisplay();
+    }
+
+    private void UpdateSettingsTempUsageDisplay()
+    {
+        if (_exeFolder == null)
+        {
+            SettingsTempUsageTextBlock.Text = "Executable folder unavailable";
+            return;
+        }
+
+        var tempRoot = GetTempFolder(_exeFolder);
+        SettingsTempUsageTextBlock.Text = $"{FormatByteSize(GetPathSize(tempRoot))} ({tempRoot})";
+    }
+
+    private void RefreshSettingsTempUsage_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateSettingsTempUsageDisplay();
+    }
+
+    private void ShowSettingsTempDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        ShowPendingTempDiagnostics_Click(sender, e);
     }
 
     private void SaveSettingsTab_Click(object sender, RoutedEventArgs e)
@@ -2313,7 +2426,7 @@ ON CONFLICT(name) DO UPDATE SET
         var picker = new OpenFileDialog
         {
             Title = "Select Mod File (ZIP, 7Z or DLL)",
-            Filter = "ZIP Files (*.zip)|*.zip|7Z Files (*.7z)|*.7z|DLL Files (*.dll)|*.dll|All Files (*.*)|*.*",
+            Filter = "All Files (*.*)|*.*|ZIP Files (*.zip)|*.zip|7Z Files (*.7z)|*.7z|DLL Files (*.dll)|*.dll",
             CheckFileExists = true,
             Multiselect = false
         };
@@ -3794,11 +3907,15 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
         if (_exeFolder == null)
             return "Executable folder not determined.";
 
+        var tempRoot = GetTempFolder(_exeFolder);
         var pendingRoot = GetPendingTempFolder(_exeFolder);
         var pendingClientFolder = GetPendingClientFilesFolder(_exeFolder);
         var pendingServerFolder = GetPendingServerFilesFolder(_exeFolder);
         var clientStorageFolder = GetPluginZipFolder(_exeFolder);
         var serverStorageFolder = GetServerModZipFolder(_exeFolder);
+        var oldPluginsFolder = GetOldPluginsFolder(_exeFolder);
+        var oldServerModsFolder = GetOldServerModsFolder(_exeFolder);
+        var trashFolder = GetTempTrashFolder(_exeFolder);
 
         var stagedClientFiles = Directory.Exists(pendingClientFolder)
             ? Directory.GetFiles(pendingClientFolder, "*", SearchOption.TopDirectoryOnly)
@@ -3836,13 +3953,38 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
 
         var report = new System.Text.StringBuilder();
         report.AppendLine("Pending temp staging summary");
+        report.AppendLine($"Total temp root: {tempRoot}");
+        report.AppendLine($"Total temp usage: {FormatByteSize(GetPathSize(tempRoot))}");
+        report.AppendLine($"Pending temp usage: {FormatByteSize(GetPathSize(pendingRoot))}");
+        report.AppendLine($"Old plugin backups usage: {FormatByteSize(GetPathSize(oldPluginsFolder))}");
+        report.AppendLine($"Old server backups usage: {FormatByteSize(GetPathSize(oldServerModsFolder))}");
+        report.AppendLine($"Trash usage: {FormatByteSize(GetPathSize(trashFolder))}");
         report.AppendLine($"Pending root: {pendingRoot}");
         report.AppendLine();
         report.AppendLine($"Client staged files: {stagedClientFiles.Length}");
         report.AppendLine($"Server staged zips: {stagedServerFiles.Length}");
         report.AppendLine($"Pending client entries: {_pendingChanges.Count}");
         report.AppendLine($"Pending server entries: {_pendingServerChanges.Count}");
+        var historyEntries = LoadChangeHistoryEntriesFromDatabase();
+        report.AppendLine($"Applied history entries: {historyEntries.Count}");
+        report.AppendLine($"Revert ready: {historyEntries.Count(x => x.CanRevert)}");
+        report.AppendLine($"Revert blocked: {historyEntries.Count(x => !x.CanRevert && string.IsNullOrWhiteSpace(x.RevertedUtc))}");
+        var groupedHistoryTemp = historyEntries
+            .Where(x => x.TempArtifactSizeBytes > 0)
+            .GroupBy(x => x.TempGroupLabel)
+            .Select(g => new { Group = g.Key, Bytes = g.Sum(x => x.TempArtifactSizeBytes), Count = g.Count() })
+            .OrderByDescending(x => x.Bytes)
+            .ToList();
+        report.AppendLine($"History temp groups: {groupedHistoryTemp.Count}");
         report.AppendLine();
+
+        if (groupedHistoryTemp.Count > 0)
+        {
+            report.AppendLine("Top temp usage groups (mod/version):");
+            foreach (var group in groupedHistoryTemp.Take(15))
+                report.AppendLine($"- {group.Group}: {FormatByteSize(group.Bytes)} ({group.Count} artifact(s))");
+            report.AppendLine();
+        }
 
         report.AppendLine($"Missing client payloads: {missingClient.Count}");
         if (missingClient.Count > 0)
@@ -3954,33 +4096,47 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
                     {
                         case ServerStateAddBoth:
                         case ServerStateUpdateBoth:
-                            UpsertServerModFromPending(connection, mod, selected.Name);
-                            UpsertLocalServerModFromPending(mod, selected.Name);
+                            var historyBoth = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyBoth != null)
+                                InsertChangeHistoryEntry(connection, historyBoth);
                             break;
                         case ServerStateDeleteBoth:
-                            DeleteServerModFromDatabase(connection, selected.Name);
-                            RemoveLocalServerMod(selected.Name);
+                            var historyDeleteBoth = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyDeleteBoth != null)
+                                InsertChangeHistoryEntry(connection, historyDeleteBoth);
                             break;
                         case ServerStateAddDb:
                         case ServerStateUpdateDb:
-                            UpsertServerModFromPending(connection, mod, selected.Name);
+                            var historyDb = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyDb != null)
+                                InsertChangeHistoryEntry(connection, historyDb);
                             break;
                         case ServerStateDeleteDb:
-                            DeleteServerModFromDatabase(connection, selected.Name);
+                            var historyDeleteDb = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyDeleteDb != null)
+                                InsertChangeHistoryEntry(connection, historyDeleteDb);
                             break;
                         case ServerStateAddLocal:
                         case ServerStateUpdateLocal:
-                            UpsertLocalServerModFromPending(mod, selected.Name);
+                            var historyLocal = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyLocal != null)
+                                InsertChangeHistoryEntry(connection, historyLocal);
                             break;
                         case ServerStateDeleteLocal:
-                            RemoveLocalServerMod(selected.Name);
+                            var historyDeleteLocal = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyDeleteLocal != null)
+                                InsertChangeHistoryEntry(connection, historyDeleteLocal);
                             break;
                         case "add":
                         case "update":
-                            UpsertServerModFromPending(connection, mod, selected.Name);
+                            var historyLegacyUpsert = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyLegacyUpsert != null)
+                                InsertChangeHistoryEntry(connection, historyLegacyUpsert);
                             break;
                         case "delete":
-                            DeleteServerModFromDatabase(connection, selected.Name);
+                            var historyLegacyDelete = ApplyPendingServerChange(connection, selected.Name, mod);
+                            if (historyLegacyDelete != null)
+                                InsertChangeHistoryEntry(connection, historyLegacyDelete);
                             break;
                     }
 
@@ -3992,38 +4148,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
                     if (!_pendingChanges.TryGetValue(selected.Name, out var mod))
                         continue;
 
-                    if (mod.PendingChangeState == "add")
-                    {
-                        mod.Version = NormalizeVersionForStorage(mod.Version, "0.0.0");
-                        mod.Revision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : 1;
-                        EnsureClientPendingFileInStorage(mod);
-                        UpsertModInDatabase(connection, mod);
-                    }
-                    else if (mod.PendingChangeState == "delete")
-                    {
-                        if (existingDbMods.TryGetValue(selected.Name, out var existingDelete))
-                            ArchiveExistingClientMod(existingDelete);
-                        DeleteModFromDatabase(connection, selected.Name);
-                    }
-                    else if (mod.PendingChangeState == "update" && !string.IsNullOrWhiteSpace(mod.NewVersion))
-                    {
-                        if (existingDbMods.TryGetValue(selected.Name, out var existingUpdate))
-                            ArchiveExistingClientMod(existingUpdate);
-                        EnsureClientPendingFileInStorage(mod, overwriteExisting: true);
-                        var oldVersion = NormalizeVersionForStorage(mod.Version, "0.0.0");
-                        var targetVersion = NormalizeVersionForStorage(mod.NewVersion, oldVersion);
-                        var existingRevision = existingDbMods.TryGetValue(selected.Name, out var existingRevisionMod)
-                            ? Math.Max(0, existingRevisionMod.Revision)
-                            : Math.Max(0, mod.Revision);
-                        mod.Version = targetVersion;
-                        var effectiveNewRevision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision : (int?)null;
-                        mod.Revision = effectiveNewRevision ?? (string.Equals(oldVersion, targetVersion, StringComparison.OrdinalIgnoreCase)
-                            ? Math.Max(1, existingRevision + 1)
-                            : 1);
-                        mod.NewVersion = null;
-                        mod.NewRevision = null;
-                        UpsertModInDatabase(connection, mod);
-                    }
+                    var clientHistory = ApplyPendingClientChange(connection, selected.Name, mod, existingDbMods);
+                    if (clientHistory != null)
+                        InsertChangeHistoryEntry(connection, clientHistory);
 
                     _pendingChanges.Remove(selected.Name);
                     applied++;
@@ -4035,6 +4162,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
             RefreshModListView();
             RefreshServerModsListView();
             RefreshPendingChanges_Internal();
+            RefreshChangeHistoryView();
             MessageBox.Show($"Force-applied {applied} pending change(s).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -4140,45 +4268,9 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
 
             foreach (var (name, mod) in _pendingChanges)
             {
-                if (mod.PendingChangeState == "add")
-                {
-                    mod.Version = NormalizeVersionForStorage(mod.Version, "0.0.0");
-                    mod.Revision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision.Value : 1;
-                    EnsureClientPendingFileInStorage(mod);
-                    UpsertModInDatabase(connection, mod);
-                }
-                else if (mod.PendingChangeState == "delete")
-                {
-                    if (existingDbMods.TryGetValue(name, out var existingDelete))
-                        ArchiveExistingClientMod(existingDelete);
-
-                    DeleteModFromDatabase(connection, name);
-                }
-                else if (mod.PendingChangeState == "update")
-                {
-                    // For update, just update the version and new version becomes the version
-                    if (!string.IsNullOrWhiteSpace(mod.NewVersion))
-                    {
-                        if (existingDbMods.TryGetValue(name, out var existingUpdate))
-                            ArchiveExistingClientMod(existingUpdate);
-
-                        EnsureClientPendingFileInStorage(mod, overwriteExisting: true);
-                        var oldVersion = NormalizeVersionForStorage(mod.Version, "0.0.0");
-                        var targetVersion = NormalizeVersionForStorage(mod.NewVersion, oldVersion);
-                        var existingRevision = existingDbMods.TryGetValue(name, out var existingRevisionMod)
-                            ? Math.Max(0, existingRevisionMod.Revision)
-                            : Math.Max(0, mod.Revision);
-
-                        mod.Version = targetVersion;
-                        var effectiveNewRevision = mod.NewRevision.HasValue && mod.NewRevision.Value > 0 ? mod.NewRevision : (int?)null;
-                        mod.Revision = effectiveNewRevision ?? (string.Equals(oldVersion, targetVersion, StringComparison.OrdinalIgnoreCase)
-                            ? Math.Max(1, existingRevision + 1)
-                            : 1);
-                        mod.NewVersion = null; // Clear the new version after applying
-                        mod.NewRevision = null;
-                        UpsertModInDatabase(connection, mod);
-                    }
-                }
+                var clientHistory = ApplyPendingClientChange(connection, name, mod, existingDbMods);
+                if (clientHistory != null)
+                    InsertChangeHistoryEntry(connection, clientHistory);
             }
 
             // Apply server mod pending changes
@@ -4190,40 +4282,54 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
                 {
                     case ServerStateAddBoth:
                     case ServerStateUpdateBoth:
-                        UpsertServerModFromPending(connection, mod, name);
-                        UpsertLocalServerModFromPending(mod, name);
+                        var historyBoth = ApplyPendingServerChange(connection, name, mod);
+                        if (historyBoth != null)
+                            InsertChangeHistoryEntry(connection, historyBoth);
                         break;
 
                     case ServerStateDeleteBoth:
-                        DeleteServerModFromDatabase(connection, name);
-                        RemoveLocalServerMod(name);
+                        var historyDeleteBoth = ApplyPendingServerChange(connection, name, mod);
+                        if (historyDeleteBoth != null)
+                            InsertChangeHistoryEntry(connection, historyDeleteBoth);
                         break;
 
                     case ServerStateAddDb:
                     case ServerStateUpdateDb:
-                        UpsertServerModFromPending(connection, mod, name);
+                        var historyDb = ApplyPendingServerChange(connection, name, mod);
+                        if (historyDb != null)
+                            InsertChangeHistoryEntry(connection, historyDb);
                         break;
 
                     case ServerStateDeleteDb:
-                        DeleteServerModFromDatabase(connection, name);
+                        var historyDeleteDb = ApplyPendingServerChange(connection, name, mod);
+                        if (historyDeleteDb != null)
+                            InsertChangeHistoryEntry(connection, historyDeleteDb);
                         break;
 
                     case ServerStateAddLocal:
                     case ServerStateUpdateLocal:
-                        UpsertLocalServerModFromPending(mod, name);
+                        var historyLocal = ApplyPendingServerChange(connection, name, mod);
+                        if (historyLocal != null)
+                            InsertChangeHistoryEntry(connection, historyLocal);
                         break;
 
                     case ServerStateDeleteLocal:
-                        RemoveLocalServerMod(name);
+                        var historyDeleteLocal = ApplyPendingServerChange(connection, name, mod);
+                        if (historyDeleteLocal != null)
+                            InsertChangeHistoryEntry(connection, historyDeleteLocal);
                         break;
 
                     // Backward-compatible old states
                     case "add":
                     case "update":
-                        UpsertServerModFromPending(connection, mod, name);
+                        var historyLegacyUpsert = ApplyPendingServerChange(connection, name, mod);
+                        if (historyLegacyUpsert != null)
+                            InsertChangeHistoryEntry(connection, historyLegacyUpsert);
                         break;
                     case "delete":
-                        DeleteServerModFromDatabase(connection, name);
+                        var historyLegacyDelete = ApplyPendingServerChange(connection, name, mod);
+                        if (historyLegacyDelete != null)
+                            InsertChangeHistoryEntry(connection, historyLegacyDelete);
                         break;
                 }
             }
@@ -4244,6 +4350,7 @@ VALUES($modName, $changeType, $oldVersion, $newVersion, $oldRevision, $newRevisi
             RefreshModListView();
             RefreshServerModsListView();
             RefreshPendingChanges_Internal();
+            RefreshChangeHistoryView();
 
             // Restart servers if option is checked and they were running
             if (anyServerRunning && restartServers)
@@ -4422,7 +4529,7 @@ ON CONFLICT(name) DO UPDATE SET
             zipPath);
     }
 
-    private void UpsertLocalServerModFromPending(ServerModInfo mod, string fallbackName)
+    private string? UpsertLocalServerModFromPending(ServerModInfo mod, string fallbackName)
     {
         if (_exeFolder == null)
             throw new InvalidOperationException("Executable folder not determined.");
@@ -4442,9 +4549,11 @@ ON CONFLICT(name) DO UPDATE SET
         ZipFile.ExtractToDirectory(zipPath, tempTargetFolder);
         var extractedSourceFolder = ResolveServerModSourceDirectory(tempTargetFolder, targetName);
 
+        string? archivedSnapshotPath = null;
         var backupFolder = Path.Combine(tempExtractRoot, targetName + "_backup_" + Guid.NewGuid().ToString("N"));
         if (Directory.Exists(targetFolder))
         {
+            archivedSnapshotPath = ArchiveExistingLocalServerMod(targetName, targetFolder);
             if (Directory.Exists(backupFolder))
                 Directory.Delete(backupFolder, true);
             Directory.Move(targetFolder, backupFolder);
@@ -4458,6 +4567,8 @@ ON CONFLICT(name) DO UPDATE SET
 
         if (Directory.Exists(tempTargetFolder))
             Directory.Delete(tempTargetFolder, true);
+
+        return archivedSnapshotPath;
     }
 
     private static string ResolveServerModSourceDirectory(string extractRoot, string modName)
@@ -4585,12 +4696,18 @@ ON CONFLICT(name) DO UPDATE SET
         }
     }
 
-    private void RemoveLocalServerMod(string modName)
+    private string? RemoveLocalServerMod(string modName)
     {
         var serverModsRoot = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods");
         var targetFolder = Path.Combine(serverModsRoot, modName);
         if (Directory.Exists(targetFolder))
-            Directory.Delete(targetFolder, true);
+        {
+            var archivePath = ArchiveExistingLocalServerMod(modName, targetFolder);
+            MoveDirectoryToTempTrash(targetFolder, "ServerLocalRemovals");
+            return archivePath;
+        }
+
+        return null;
     }
 
     internal bool TrySyncLatestServerFilesIntoPreview(
@@ -4874,6 +4991,53 @@ ON CONFLICT(name) DO UPDATE SET
     // ──────────────────── Server Mod button handlers ────────────────────
 
     private void RefreshServerMods_Click(object sender, RoutedEventArgs e) => RefreshServerModsListView();
+
+    private void ManageServerBackups_Click(object sender, RoutedEventArgs e)
+    {
+        var window = new ServerModBackupWindow(LoadOldServerModBackups())
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true || window.RequestedBackupRestore == null)
+            return;
+
+        try
+        {
+            var backup = window.RequestedBackupRestore;
+            if (!File.Exists(backup.FilePath))
+            {
+                MessageBox.Show($"Archived file not found: {backup.FilePath}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var stagedFileName = StageServerPendingZip(backup.FilePath, backup.FileName);
+            var localModPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", backup.ModName);
+            var localExists = Directory.Exists(localModPath);
+            var oldVersion = localExists ? ExtractServerModVersion(localModPath) : string.Empty;
+
+            _pendingServerChanges[backup.ModName] = new ServerModInfo
+            {
+                Name = backup.ModName,
+                Version = oldVersion,
+                NewVersion = backup.Version,
+                Revision = localExists ? GetCurrentServerRevisionForPending(backup.ModName) : 0,
+                FileName = stagedFileName,
+                PendingChangeState = localExists ? ServerStateUpdateLocal : ServerStateAddLocal
+            };
+
+            SaveServerPendingChangesToDatabase();
+            RefreshServerModsListView();
+            RefreshPendingChanges_Internal();
+
+            var action = localExists ? "update" : "add";
+            MessageBox.Show($"Queued server mod {action} from backup: {backup.ModName} ({backup.Version}).", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Failed to queue restore from backup: " + ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private static bool HasLocal(ServerModViewModel mod) => !string.Equals(mod.LocalVersion, "-", StringComparison.OrdinalIgnoreCase);
     private static bool HasDb(ServerModViewModel mod) => !string.Equals(mod.DbVersion, "-", StringComparison.OrdinalIgnoreCase);
