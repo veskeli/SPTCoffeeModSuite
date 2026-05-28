@@ -9,6 +9,9 @@ public class FileChangePreviewItem
     public bool IsIncluded { get; set; } = true;
     public string FileType { get; set; } = "Other";
     public string FileName { get; set; } = string.Empty;
+    public string DisplayName => IsBundleGroup && BundleItemCount > 0
+        ? $"{FileName} ({BundleItemCount} {(BundleItemCount == 1 ? "item" : "items")})"
+        : FileName;
     public string FileVersion { get; set; } = string.Empty;
     public string Location { get; set; } = ".";
     public bool ExistsInOld { get; set; }
@@ -17,6 +20,8 @@ public class FileChangePreviewItem
     public string TargetRelativePath { get; set; } = string.Empty;
     public string SourceRelativePath { get; set; } = string.Empty;
     public string? OldSourcePath { get; set; }
+    public bool IsBundleGroup { get; set; }
+    public int BundleItemCount { get; set; }
     public bool IsFromOldSource => string.Equals(SourceKind, "Old", StringComparison.OrdinalIgnoreCase)
                                    || string.Equals(SourceKind, "Both", StringComparison.OrdinalIgnoreCase);
 

@@ -272,7 +272,7 @@
                     <GridViewColumn Header="File Name" Width="260">
                         <GridViewColumn.CellTemplate>
                             <DataTemplate>
-                                <TextBlock Text="{Binding FileName}">
+                                <TextBlock Text="{Binding DisplayName}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock" BasedOn="{StaticResource PreviewCellTextStyle}">
                                             <Setter Property="Foreground" Value="White"/>

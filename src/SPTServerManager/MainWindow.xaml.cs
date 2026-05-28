@@ -2438,9 +2438,10 @@ ON CONFLICT(name) DO UPDATE SET
         string? tempConvertedArchivePath = null;
         try
         {
-            var selectedFilePath = picker.FileName;
-            selectedFilePath = ConvertArchiveToZipIfNeeded(selectedFilePath, out tempConvertedArchivePath);
-            var detected = DetectModPackageFromFile(selectedFilePath);
+            var preparation = LoadIncomingPackagePreparationWithProgress(picker.FileName);
+            var selectedFilePath = preparation.SourcePath;
+            tempConvertedArchivePath = preparation.TempConvertedArchivePath;
+            var detected = preparation.Detected;
             var keepOldConfigs = false;
             var serverModsWithConfigConflicts = new List<string>();
             var excludedSourcePaths = new List<string>();
@@ -2766,7 +2767,9 @@ ON CONFLICT(name) DO UPDATE SET
             var selectedFilePath = updateWindow.SelectedFilePath;
             if (!string.IsNullOrWhiteSpace(selectedFilePath))
             {
-                selectedFilePath = ConvertArchiveToZipIfNeeded(selectedFilePath, out tempConvertedArchivePath);
+                var preparation = LoadIncomingPackagePreparationWithProgress(selectedFilePath);
+                selectedFilePath = preparation.SourcePath;
+                tempConvertedArchivePath = preparation.TempConvertedArchivePath;
             }
             var normalizedNewVersion = NormalizeVersionForStorage(updatedMod.NewVersion, selected.Version);
             string? selectedServerVersion = null;
@@ -5223,6 +5226,10 @@ ON CONFLICT(name) DO UPDATE SET
         public int ServerOldRevision { get; set; }
     }
 
+    private sealed record PreviewLoadState(string Status, int Current, int Total);
+
+    private sealed record IncomingPackagePreparation(string SourcePath, string? TempConvertedArchivePath, DetectedModPackage Detected);
+
     private sealed class OldPackageFileCandidate
     {
         public string FileType { get; set; } = "Other";
@@ -5230,6 +5237,91 @@ ON CONFLICT(name) DO UPDATE SET
         public string Location { get; set; } = ".";
         public string TargetRelativePath { get; set; } = string.Empty;
         public string SourceFilePath { get; set; } = string.Empty;
+    }
+
+    private IncomingPackagePreview LoadIncomingPackagePreviewWithProgress(string sourcePath, string? fallbackClientModName, string? fallbackServerModName)
+    {
+        var loadingWindow = new IncomingFilePreviewLoadingWindow
+        {
+            Owner = this
+        };
+
+        IncomingPackagePreview? preview = null;
+        Exception? loadError = null;
+
+        loadingWindow.ContentRendered += async (_, _) =>
+        {
+            try
+            {
+                var progress = new Progress<PreviewLoadState>(state =>
+                    loadingWindow.UpdateProgress(state.Status, state.Current, state.Total));
+
+                preview = await Task.Run(() => BuildIncomingPackagePreview(sourcePath, fallbackClientModName, fallbackServerModName, progress));
+            }
+            catch (Exception ex)
+            {
+                loadError = ex;
+            }
+            finally
+            {
+                loadingWindow.Close();
+            }
+        };
+
+        loadingWindow.ShowDialog();
+
+        if (loadError != null)
+            throw loadError;
+
+        return preview ?? new IncomingPackagePreview();
+    }
+
+    private IncomingPackagePreparation LoadIncomingPackagePreparationWithProgress(string sourcePath)
+    {
+        var loadingWindow = new IncomingFilePreviewLoadingWindow
+        {
+            Owner = this
+        };
+
+        IncomingPackagePreparation? preparation = null;
+        Exception? loadError = null;
+
+        loadingWindow.ContentRendered += async (_, _) =>
+        {
+            try
+            {
+                loadingWindow.UpdateProgress("Preparing selected file...", 0, 0);
+                IProgress<PreviewLoadState> progress = new Progress<PreviewLoadState>(state =>
+                    loadingWindow.UpdateProgress(state.Status, state.Current, state.Total));
+
+                preparation = await Task.Run(() =>
+                {
+                    progress.Report(new PreviewLoadState("Converting and inspecting archive...", 0, 1));
+
+                    var convertedPath = ConvertArchiveToZipIfNeeded(sourcePath, out var tempConvertedArchivePath, progress);
+
+                    progress.Report(new PreviewLoadState("Detecting mod contents...", 0, 1));
+
+                    var detected = DetectModPackageFromFile(convertedPath);
+                    return new IncomingPackagePreparation(convertedPath, tempConvertedArchivePath, detected);
+                });
+            }
+            catch (Exception ex)
+            {
+                loadError = ex;
+            }
+            finally
+            {
+                loadingWindow.Close();
+            }
+        };
+
+        loadingWindow.ShowDialog();
+
+        if (loadError != null)
+            throw loadError;
+
+        return preparation ?? new IncomingPackagePreparation(sourcePath, null, new DetectedModPackage());
     }
 
     private bool ShowIncomingFilePreview(
@@ -5270,7 +5362,7 @@ ON CONFLICT(name) DO UPDATE SET
         selectedPluginIsOptional = false;
         selectedPluginOptionalDefaultState = false;
 
-        var preview = BuildIncomingPackagePreview(sourcePath, fallbackClientModName, fallbackServerModName);
+        var preview = LoadIncomingPackagePreviewWithProgress(sourcePath, fallbackClientModName, fallbackServerModName);
         if (preview.Files.Count == 0)
             return true;
 
@@ -5396,11 +5488,17 @@ ON CONFLICT(name) DO UPDATE SET
         }
     }
 
-    private IncomingPackagePreview BuildIncomingPackagePreview(string sourcePath, string? fallbackClientModName, string? fallbackServerModName)
+    private IncomingPackagePreview BuildIncomingPackagePreview(
+        string sourcePath,
+        string? fallbackClientModName,
+        string? fallbackServerModName,
+        IProgress<PreviewLoadState>? progress = null)
     {
         var preview = new IncomingPackagePreview();
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return preview;
+
+        progress?.Report(new PreviewLoadState("Inspecting selected file...", 0, 1));
 
         if (sourcePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
         {
@@ -5442,6 +5540,8 @@ ON CONFLICT(name) DO UPDATE SET
 
             if (existsInOld && IsConfigLikePath(relativePath))
                 preview.HasConfigConflicts = true;
+
+            progress?.Report(new PreviewLoadState("Preview ready.", 1, 1));
 
             return preview;
         }
@@ -5529,8 +5629,16 @@ ON CONFLICT(name) DO UPDATE SET
         try
         {
             using var archive = ZipFile.OpenRead(sourcePath);
+            var totalEntries = Math.Max(archive.Entries.Count, 1);
+            var processedEntries = 0;
+            var bundleItemCount = 0;
+            var bundleSummaryPath = $"SPT/user/mods/{preview.DetectedServerModName}/bundles/*";
+
+            progress?.Report(new PreviewLoadState("Scanning archive entries...", 0, totalEntries));
+
             foreach (var entry in archive.Entries)
             {
+                processedEntries++;
                 var normalized = entry.FullName.Replace('\\', '/').Trim('/');
                 if (string.IsNullOrWhiteSpace(normalized) || normalized.EndsWith("/", StringComparison.Ordinal))
                     continue;
@@ -5576,6 +5684,9 @@ ON CONFLICT(name) DO UPDATE SET
                     if (existsInOld && IsConfigLikePath(relativeUnderPlugin))
                         preview.HasConfigConflicts = true;
 
+                    if (processedEntries % 25 == 0 || processedEntries == totalEntries)
+                        progress?.Report(new PreviewLoadState($"Scanning plugin files... ({processedEntries}/{totalEntries})", processedEntries, totalEntries));
+
                     continue;
                 }
 
@@ -5593,6 +5704,14 @@ ON CONFLICT(name) DO UPDATE SET
                     var oldPath = Path.Combine(Config.SptServerFolder, "SPT", "user", "mods", serverModName,
                         string.Join(Path.DirectorySeparatorChar.ToString(), segments.Skip(serverIndex + 4)));
                     var existsInOld = File.Exists(oldPath);
+
+                    if (relativeUnderMod.StartsWith("bundles/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        bundleItemCount++;
+                        if (processedEntries % 25 == 0 || processedEntries == totalEntries)
+                            progress?.Report(new PreviewLoadState($"Collapsing bundles... ({bundleItemCount} items)", processedEntries, totalEntries));
+                        continue;
+                    }
 
                     preview.Files.Add(new FileChangePreviewItem
                     {
@@ -5612,6 +5731,9 @@ ON CONFLICT(name) DO UPDATE SET
                         preview.HasConfigConflicts = true;
                         preview.ServerModsWithConfigConflicts.Add(serverModName);
                     }
+
+                    if (processedEntries % 25 == 0 || processedEntries == totalEntries)
+                        progress?.Report(new PreviewLoadState($"Scanning server mod files... ({processedEntries}/{totalEntries})", processedEntries, totalEntries));
 
                     continue;
                 }
@@ -5639,6 +5761,29 @@ ON CONFLICT(name) DO UPDATE SET
                         preview.ServerModsWithConfigConflicts.Add(preview.DetectedServerModName);
                     }
                 }
+
+                if (processedEntries % 25 == 0 || processedEntries == totalEntries)
+                    progress?.Report(new PreviewLoadState($"Scanning archive entries... ({processedEntries}/{totalEntries})", processedEntries, totalEntries));
+            }
+
+            if (bundleItemCount > 0)
+            {
+                preview.Files.Add(new FileChangePreviewItem
+                {
+                    FileType = "Server Mod",
+                    FileName = "bundles",
+                    FileVersion = string.Empty,
+                    Location = ".",
+                    ExistsInOld = false,
+                    SourceKind = "New",
+                    SelectionChoice = FileChangePreviewItem.ChoiceKeepIncoming,
+                    SourceRelativePath = bundleSummaryPath,
+                    TargetRelativePath = bundleSummaryPath,
+                    IsBundleGroup = true,
+                    BundleItemCount = bundleItemCount
+                });
+
+                progress?.Report(new PreviewLoadState($"Collapsed {bundleItemCount} bundle items into one preview row.", totalEntries, totalEntries));
             }
         }
         catch
@@ -5653,6 +5798,8 @@ ON CONFLICT(name) DO UPDATE SET
             preview.ServerModsWithConfigConflicts.Add(fallbackServerModName);
         }
 
+        progress?.Report(new PreviewLoadState("Preview ready.", 1, 1));
+
         return preview;
     }
 
@@ -5661,6 +5808,7 @@ ON CONFLICT(name) DO UPDATE SET
         var existingByTargetPath = preview.Files
             .Where(f => !string.IsNullOrWhiteSpace(f.TargetRelativePath))
             .ToDictionary(f => NormalizeArchivePath(f.TargetRelativePath), StringComparer.OrdinalIgnoreCase);
+        var hasBundleSummary = preview.Files.Any(f => f.IsBundleGroup);
 
         foreach (var candidate in GetOldFileCandidatesForPreview(preview, currentClient))
         {
@@ -5668,10 +5816,14 @@ ON CONFLICT(name) DO UPDATE SET
             if (string.IsNullOrWhiteSpace(normalizedTarget))
                 continue;
 
+            if (hasBundleSummary && IsBundleSummaryTargetPath(normalizedTarget))
+                continue;
+
             if (existingByTargetPath.TryGetValue(normalizedTarget, out var existing))
             {
                 existing.ExistsInOld = true;
                 existing.SourceKind = "Both";
+                existing.OldSourcePath = candidate.SourceFilePath;
                 continue;
             }
 
@@ -5791,7 +5943,20 @@ ON CONFLICT(name) DO UPDATE SET
         IReadOnlyCollection<string> excludedSourcePaths,
         IReadOnlyCollection<FileChangePreviewItem> includedOldFiles)
     {
-        var excluded = new HashSet<string>(excludedSourcePaths.Select(NormalizeArchivePath), StringComparer.OrdinalIgnoreCase);
+        var exactExcluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var prefixExcluded = new List<string>();
+        foreach (var excludedSourcePath in excludedSourcePaths)
+        {
+            var normalizedExcluded = NormalizeArchivePath(excludedSourcePath);
+            if (normalizedExcluded.EndsWith("/*", StringComparison.Ordinal))
+            {
+                prefixExcluded.Add(normalizedExcluded[..^2]);
+                continue;
+            }
+
+            exactExcluded.Add(normalizedExcluded);
+        }
+
         var tempZipPath = Path.Combine(Path.GetTempPath(), $"sptcoffee_filtered_{Guid.NewGuid():N}.zip");
 
         using (var sourceArchive = ZipFile.OpenRead(sourceZipPath))
@@ -5806,7 +5971,7 @@ ON CONFLICT(name) DO UPDATE SET
                 if (string.IsNullOrWhiteSpace(normalized) || normalized.EndsWith("/", StringComparison.Ordinal))
                     continue;
 
-                if (excluded.Contains(normalized))
+                if (exactExcluded.Contains(normalized) || prefixExcluded.Any(prefix => normalized.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase)))
                     continue;
 
                 var targetEntry = targetArchive.CreateEntry(sourceEntry.FullName, CompressionLevel.Optimal);
@@ -5845,6 +6010,15 @@ ON CONFLICT(name) DO UPDATE SET
     private static string NormalizeArchivePath(string path)
     {
         return path.Replace('\\', '/').Trim('/');
+    }
+
+    private static bool IsBundleSummaryTargetPath(string targetRelativePath)
+    {
+        var normalized = NormalizeArchivePath(targetRelativePath);
+        return normalized.EndsWith("bundles/*", StringComparison.OrdinalIgnoreCase)
+               || normalized.EndsWith("/bundles", StringComparison.OrdinalIgnoreCase)
+               || normalized.Contains("/bundles/", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(normalized, "bundles", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateSingleFileZip(string sourceFilePath, string entryName)
@@ -5980,7 +6154,7 @@ ON CONFLICT(name) DO UPDATE SET
         return tempZipPath;
     }
 
-    private static string ConvertArchiveToZipIfNeeded(string sourcePath, out string? tempZipPath)
+    private static string ConvertArchiveToZipIfNeeded(string sourcePath, out string? tempZipPath, IProgress<PreviewLoadState>? progress = null)
     {
         tempZipPath = null;
 
@@ -5997,8 +6171,16 @@ ON CONFLICT(name) DO UPDATE SET
         {
             Directory.CreateDirectory(extractFolder);
             using var archive = ArchiveFactory.Open(sourcePath);
-            foreach (var entry in archive.Entries.Where(e => !e.IsDirectory))
+            var entries = archive.Entries.Where(e => !e.IsDirectory).ToList();
+            var totalEntries = Math.Max(entries.Count, 1);
+
+            if (entries.Count == 0)
+                throw new InvalidDataException("The selected 7z archive does not contain any files.");
+
+            for (var i = 0; i < entries.Count; i++)
             {
+                var entry = entries[i];
+                progress?.Report(new PreviewLoadState($"Extracting 7z contents... ({i + 1}/{totalEntries})", i + 1, totalEntries));
                 entry.WriteToDirectory(extractFolder, new ExtractionOptions
                 {
                     ExtractFullPath = true,
@@ -6006,7 +6188,24 @@ ON CONFLICT(name) DO UPDATE SET
                 });
             }
 
-            ZipFile.CreateFromDirectory(extractFolder, tempZipPath);
+            var extractedFiles = Directory.EnumerateFiles(extractFolder, "*", SearchOption.AllDirectories).ToList();
+            var totalFiles = Math.Max(extractedFiles.Count, 1);
+
+            if (extractedFiles.Count == 0)
+                throw new InvalidDataException("The selected 7z archive could not be converted because no files were extracted.");
+
+            using (var zipArchive = ZipFile.Open(tempZipPath, ZipArchiveMode.Create))
+            {
+                for (var i = 0; i < extractedFiles.Count; i++)
+                {
+                    var extractedFile = extractedFiles[i];
+                    var entryName = Path.GetRelativePath(extractFolder, extractedFile).Replace('\\', '/');
+                    progress?.Report(new PreviewLoadState($"Packing converted zip... ({i + 1}/{totalFiles})", i + 1, totalFiles));
+
+                    zipArchive.CreateEntryFromFile(extractedFile, entryName, CompressionLevel.Optimal);
+                }
+            }
+
             return tempZipPath;
         }
         finally
@@ -6498,7 +6697,9 @@ ON CONFLICT(name) DO UPDATE SET
 
         try
         {
-            var sourceArchivePath = ConvertArchiveToZipIfNeeded(picker.FileName, out tempConvertedArchivePath);
+            var preparation = LoadIncomingPackagePreparationWithProgress(picker.FileName);
+            var sourceArchivePath = preparation.SourcePath;
+            tempConvertedArchivePath = preparation.TempConvertedArchivePath;
 
             if (!ShowIncomingFilePreview(sourceArchivePath, null, selected.Name,
                     out var keepOldConfigs, out var serverModsWithConfigConflicts, out var excludedSourcePaths, out var includedOldFiles,
